@@ -22,7 +22,13 @@ public sealed class WindowsFileSystem : IFileSystem
         return new WindowsTempFile(handle, path);
     }
 
-    public IVerifyFile OpenForVerify(string path) => throw new NotImplementedException("Task 3");
+    public IVerifyFile OpenForVerify(string path)
+    {
+        // Share everything: verification may read a temp file whose write handle is still open.
+        var handle = Open(path, Native.GENERIC_READ, Native.FILE_SHARE_ALL, Native.OPEN_EXISTING,
+            Native.FILE_FLAG_NO_BUFFERING | Native.FILE_FLAG_SEQUENTIAL_SCAN, "open for verification");
+        return new WindowsVerifyFile(handle);
+    }
 
     public FileIdentity? TryGetIdentity(string path)
     {
@@ -159,4 +165,10 @@ internal sealed unsafe class WindowsTempFile(SafeFileHandle handle, string path)
     {
         if (!Native.SetFileInformationByHandle(handle, infoClass, info, (uint)size)) throw Native.LastError(operation, path);
     }
+}
+
+internal sealed class WindowsVerifyFile(SafeFileHandle handle) : IVerifyFile
+{
+    public int Read(Span<byte> buffer, long offset) => RandomAccess.Read(handle, buffer, offset);
+    public void Dispose() => handle.Dispose();
 }
