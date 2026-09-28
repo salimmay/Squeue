@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Squeue.Core/Squeue.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Squeue.Tests/Squeue.Tests.csproj" />
+  </Folder>
+</Solution>
