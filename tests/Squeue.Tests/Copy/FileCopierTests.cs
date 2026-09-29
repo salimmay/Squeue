@@ -12,6 +12,75 @@ public class FileCopierTests
     private readonly WindowsFileSystem _fs = new();
 
     [Fact]
+    public void Small_files_are_copied_without_the_reader_thread()
+    {
+        using var s = new CopyScenario();
+        s.WriteSource(TestDir.RandomBytes(Chunk));
+        long id = s.AddEntry();
+        var copier = new FileCopier(_fs, s.Journal, Options);
+
+        Assert.Equal(CopyOutcome.Done, copier.CopyEntry(id).Outcome);
+
+        Assert.Equal(0, copier.ReaderThreadsStarted);
+    }
+
+    [Fact]
+    public void Large_files_are_copied_and_verified_through_the_reader_thread()
+    {
+        using var s = new CopyScenario();
+        var content = TestDir.RandomBytes(20 * Chunk + 5);
+        s.WriteSource(content);
+        long id = s.AddEntry();
+        var copier = new FileCopier(_fs, s.Journal, Options);
+
+        Assert.Equal(CopyOutcome.Done, copier.CopyEntry(id).Outcome);
+
+        Assert.Equal(content, File.ReadAllBytes(s.Dest));
+        Assert.Equal(2, copier.ReaderThreadsStarted); // one for the copy, one for the verification
+    }
+
+    [Fact]
+    public void A_source_read_error_mid_file_still_cleans_up()
+    {
+        using var s = new CopyScenario();
+        s.WriteSource(TestDir.RandomBytes(20 * Chunk));
+        long id = s.AddEntry();
+        var fs = new FailingSourceFileSystem(_fs, failAtOffset: 5 * Chunk);
+
+        var result = new FileCopier(fs, s.Journal, Options).CopyEntry(id);
+
+        Assert.Equal(CopyOutcome.Failed, result.Outcome);
+        Assert.Equal(21, result.Win32Error);
+        Assert.False(File.Exists(s.Dest));
+        Assert.Empty(s.TempFiles());
+        Assert.Empty(s.Journal.OpenAttempts());
+    }
+
+    [Fact]
+    public void Rejects_a_pipeline_depth_below_two() =>
+        Assert.Throws<ArgumentException>(() => new FileCopier(_fs, null!, new CopyOptions { PipelineDepth = 1 }));
+
+    /// Passes everything through, but the source's reads fail with "device not ready" (21) at one offset.
+    private sealed class FailingSourceFileSystem(IFileSystem inner, long failAtOffset) : IFileSystem
+    {
+        public ISourceFile OpenSource(string path) => new Source(inner.OpenSource(path), path, failAtOffset);
+        public ITempFile CreateTemp(string path) => inner.CreateTemp(path);
+        public IVerifyFile OpenForVerify(string path) => inner.OpenForVerify(path);
+        public FileIdentity? TryGetIdentity(string path) => inner.TryGetIdentity(path);
+        public bool DeleteIfSameObject(string path, UInt128 fileId) => inner.DeleteIfSameObject(path, fileId);
+        public bool FlushIfSameObject(string path, UInt128 fileId) => inner.FlushIfSameObject(path, fileId);
+        public void CreateDirectory(string path) => inner.CreateDirectory(path);
+
+        private sealed class Source(ISourceFile inner, string path, long failAt) : ISourceFile
+        {
+            public FileIdentity Identity => inner.Identity;
+            public int Read(Span<byte> buffer, long offset) =>
+                offset == failAt ? throw new FsException("read", path, 21) : inner.Read(buffer, offset);
+            public void Dispose() => inner.Dispose();
+        }
+    }
+
+    [Fact]
     public void A_new_file_copy_takes_five_journal_commits()
     {
         using var s = new CopyScenario();

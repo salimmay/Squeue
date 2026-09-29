@@ -147,6 +147,5 @@ static int Run(string source, string destination, string[] args)
 
 internal static class BenchOptions
 {
-    // Task 4 adds PipelineDepth here.
-    public static CopyOptions Create(int chunkSize, int depth) => new() { ChunkSize = chunkSize };
+    public static CopyOptions Create(int chunkSize, int depth) => new() { ChunkSize = chunkSize, PipelineDepth = depth };
 }

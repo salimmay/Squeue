@@ -55,6 +55,7 @@ internal sealed class ChunkPipeline
             offset += n;
             if (stopOnShortRead && n < ChunkSize) break;
         }
+        cancellationToken.ThrowIfCancellationRequested();
         return offset;
     }
 

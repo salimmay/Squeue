@@ -131,6 +131,23 @@ public class ChunkPipelineTests
         Assert.Equal(data, output.ToArray());
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void An_already_cancelled_token_throws_on_both_paths(bool overlap)
+    {
+        var data = TestDir.RandomBytes(3 * Chunk);
+        var pipeline = new ChunkPipeline(Chunk, 2);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        bool consumed = false;
+
+        Assert.ThrowsAny<OperationCanceledException>(() =>
+            pipeline.Run(ReaderOver(data), null, (_, _) => consumed = true, false, overlap, cts.Token));
+
+        Assert.False(consumed);
+    }
+
     [Fact]
     public void Rejects_bad_sizes()
     {

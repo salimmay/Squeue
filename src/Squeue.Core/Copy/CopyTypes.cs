@@ -5,6 +5,9 @@ public sealed record CopyOptions
     /// Bytes per read/write. Must be a positive multiple of 4096.
     public int ChunkSize { get; init; } = 4 * 1024 * 1024;
 
+    /// Buffers in the read-ahead ring (at least 2). Memory used per copy is ChunkSize × PipelineDepth.
+    public int PipelineDepth { get; init; } = 4;
+
     /// How long to keep retrying when another program has the source open for writing.
     public TimeSpan SharingRetryTimeout { get; init; } = TimeSpan.FromSeconds(10);
 

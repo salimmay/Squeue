@@ -21,8 +21,25 @@ public sealed class FileCopier
         _options = options ?? new CopyOptions();
         if (_options.ChunkSize <= 0 || _options.ChunkSize % AlignedBuffer.Alignment != 0)
             throw new ArgumentException("Chunk size must be a positive multiple of 4096.", nameof(options));
+        if (_options.PipelineDepth < 2)
+            throw new ArgumentException("Pipeline depth must be at least 2.", nameof(options));
         _fs = fs;
         _journal = journal;
+    }
+
+    private ChunkPipeline? _pipeline;
+
+    /// Overlapped (reader-thread) runs so far; tests use it to check small files stay inline.
+    internal int ReaderThreadsStarted { get; private set; }
+
+    private long RunPipeline(ReadChunk read, ChunkAction? onRead, ChunkConsumer consume, bool stopOnShortRead,
+        long expectedSize, CancellationToken cancellationToken)
+    {
+        _pipeline ??= new ChunkPipeline(_options.ChunkSize, _options.PipelineDepth);
+        // A file that fits in one chunk gains nothing from a second thread.
+        bool overlap = expectedSize > _options.ChunkSize;
+        if (overlap) ReaderThreadsStarted++;
+        return _pipeline.Run(read, onRead, consume, stopOnShortRead, overlap, cancellationToken);
     }
 
     public CopyResult CopyEntry(long entryId, IProgress<CopyProgress>? progress = null, CancellationToken cancellationToken = default)
@@ -203,19 +220,18 @@ public sealed class FileCopier
         long total = source.Identity.Size;
         temp.Preallocate(total);
 
-        var buffer = new byte[_options.ChunkSize];
-        long offset = 0;
-        while (true)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            int read = source.Read(buffer, offset);
-            if (read == 0) break;
-            var chunk = buffer.AsSpan(0, read);
-            hasher?.Append(chunk);
-            temp.Write(chunk, offset);
-            offset += read;
-            progress?.Report(new CopyProgress(CopyStage.Copying, offset, total));
-        }
+        // The reader thread reads and hashes ahead while this thread writes; progress stays on this thread.
+        long offset = RunPipeline(
+            read: (buffer, at) => source.Read(buffer, at),
+            onRead: hasher is null ? null : chunk => hasher.Append(chunk),
+            consume: (chunk, at) =>
+            {
+                temp.Write(chunk, at);
+                progress?.Report(new CopyProgress(CopyStage.Copying, at + chunk.Length, total));
+            },
+            stopOnShortRead: false,
+            expectedSize: total,
+            cancellationToken);
 
         temp.SetLength(offset);
         var s = source.Identity;
@@ -229,18 +245,18 @@ public sealed class FileCopier
     {
         var hasher = Hashers.Create(algorithm);
         using var file = _fs.OpenForVerify(path);
-        using var buffer = new AlignedBuffer(_options.ChunkSize);
-        long offset = 0;
-        while (true)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            int read = file.Read(buffer.Span, offset);
-            if (read == 0) break;
-            hasher.Append(buffer.Span[..read]);
-            offset += read;
-            progress?.Report(new CopyProgress(CopyStage.Verifying, offset, total));
-            if (read < buffer.Length) break;
-        }
+        // The reader thread fetches the next chunk from disk while this thread hashes the current one.
+        RunPipeline(
+            read: (buffer, at) => file.Read(buffer, at),
+            onRead: null,
+            consume: (chunk, at) =>
+            {
+                hasher.Append(chunk);
+                progress?.Report(new CopyProgress(CopyStage.Verifying, at + chunk.Length, total));
+            },
+            stopOnShortRead: true,
+            expectedSize: total,
+            cancellationToken);
         return hasher.FinishHex();
     }
 
