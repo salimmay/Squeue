@@ -289,6 +289,37 @@ public class JobRunnerTests
     }
 
     [Fact]
+    public void Startup_shows_unfinished_jobs_and_todays_finished_ones_only()
+    {
+        using var h = new RunnerHarness();
+        long oldDone, todayDone, oldPaused;
+        using (var journal = Journal.Open(h.JournalPath))
+        {
+            oldDone = journal.CreateJob(null, "old");
+            todayDone = journal.CreateJob(null, "today");
+            oldPaused = journal.CreateJob(null, "paused");
+            journal.SetJobState(oldDone, JobState.Done);
+            journal.SetJobState(todayDone, JobState.Done);
+            journal.SetJobState(oldPaused, JobState.Paused);
+        }
+        using (var db = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={h.JournalPath};Pooling=False"))
+        {
+            db.Open();
+            using var cmd = db.CreateCommand();
+            cmd.CommandText = "UPDATE jobs SET created_at = $old WHERE id IN ($a, $b)";
+            cmd.Parameters.AddWithValue("$old", DateTime.UtcNow.AddDays(-3).ToFileTimeUtc());
+            cmd.Parameters.AddWithValue("$a", oldDone);
+            cmd.Parameters.AddWithValue("$b", oldPaused);
+            cmd.ExecuteNonQuery();
+        }
+
+        h.Runner.Start();
+        h.WaitFor(s => s.Id == oldPaused);
+
+        Assert.Equal(new[] { todayDone, oldPaused }, h.Events.Select(s => s.Id));
+    }
+
+    [Fact]
     public void A_subscriber_that_throws_does_not_stop_the_runner()
     {
         using var h = new RunnerHarness();

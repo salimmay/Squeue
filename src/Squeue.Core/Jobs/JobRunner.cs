@@ -102,7 +102,13 @@ public sealed class JobRunner : IJobQueue
                 // A job that was running when the app stopped goes back in the queue.
                 if (job.State == JobState.Running) journal.SetJobState(job.Id, JobState.Queued);
             }
-            foreach (var job in journal.Jobs()) Publish(SnapshotOf(job.Id));
+            // Unfinished jobs, and today's finished ones; older history isn't shown, so launch time stays flat.
+            var today = DateTime.Now.Date;
+            foreach (var job in journal.Jobs())
+            {
+                bool finished = job.State is JobState.Done or JobState.Cancelled;
+                if (!finished || DateTime.FromFileTimeUtc(job.CreatedAt).ToLocalTime().Date == today) Publish(SnapshotOf(job.Id));
+            }
 
             var copier = new FileCopier(_fs, journal, _options.Copy);
             while (!_commands.IsAddingCompleted)

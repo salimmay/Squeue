@@ -45,6 +45,7 @@ public sealed class Journal : IDisposable
           ended_at          INTEGER
         );
         CREATE INDEX IF NOT EXISTS attempts_open ON attempts(phase) WHERE phase NOT IN ('Finished', 'Abandoned');
+        CREATE INDEX IF NOT EXISTS entries_job ON entries(job_id);
         """;
 
     private readonly SqliteConnection _db;
