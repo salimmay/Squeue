@@ -11,6 +11,7 @@ public sealed class SimulatedCrashException(string point) : Exception($"Simulate
 public sealed class FaultyFileSystem(IFileSystem inner) : IFileSystem
 {
     private readonly Dictionary<FsOp, int> _counts = [];
+    private readonly object _lock = new();
 
     public (FsOp Op, bool After, int Occurrence)? CrashAt { get; set; }
     public bool CorruptVerifyReads { get; set; }
@@ -42,12 +43,15 @@ public sealed class FaultyFileSystem(IFileSystem inner) : IFileSystem
 
     internal void Hit(FsOp op, bool after)
     {
-        if (!after) _counts[op] = _counts.GetValueOrDefault(op) + 1;
-        if (CrashAt is { } crash && crash.Op == op && crash.After == after && _counts.GetValueOrDefault(op) == crash.Occurrence)
+        lock (_lock)
         {
-            CrashAt = null;
-            Crashed = true;
-            throw new SimulatedCrashException($"{(after ? "after" : "before")} {op} #{crash.Occurrence}");
+            if (!after) _counts[op] = _counts.GetValueOrDefault(op) + 1;
+            if (CrashAt is { } crash && crash.Op == op && crash.After == after && _counts.GetValueOrDefault(op) == crash.Occurrence)
+            {
+                CrashAt = null;
+                Crashed = true;
+                throw new SimulatedCrashException($"{(after ? "after" : "before")} {op} #{crash.Occurrence}");
+            }
         }
     }
 
