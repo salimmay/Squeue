@@ -45,6 +45,33 @@ public sealed class WindowsFileSystem : IFileSystem
         using (handle) return Native.ReadIdentity(handle, path);
     }
 
+    public bool FlushIfSameObject(string path, UInt128 fileId)
+    {
+        SafeFileHandle handle;
+        try
+        {
+            handle = Open(path, Native.GENERIC_WRITE | Native.FILE_READ_ATTRIBUTES, Native.FILE_SHARE_ALL, Native.OPEN_EXISTING,
+                Native.FILE_FLAG_OPEN_REPARSE_POINT, "open for flush");
+        }
+        catch (FsException ex) when (ex.IsNotFound)
+        {
+            return false;
+        }
+        catch (FsException ex) when (ex.IsAccessDenied)
+        {
+            // Read-only files can't be opened for writing; their rename was journaled by NTFS and is flushed
+            // with the next metadata write. Handled fully in plan 4.
+            return false;
+        }
+
+        using (handle)
+        {
+            if (Native.ReadIdentity(handle, path).FileId != fileId) return false;
+            if (!Native.FlushFileBuffers(handle)) throw Native.LastError("flush", path);
+            return true;
+        }
+    }
+
     public unsafe bool DeleteIfSameObject(string path, UInt128 fileId)
     {
         SafeFileHandle handle;

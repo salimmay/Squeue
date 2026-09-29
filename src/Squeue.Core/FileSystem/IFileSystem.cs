@@ -18,6 +18,9 @@ public interface IFileSystem
     /// Deletes the path only if it is still the object with this file id. False if it's missing or a different object.
     bool DeleteIfSameObject(string path, UInt128 fileId);
 
+    /// Flushes the file at the path to disk if it is still the object with this file id. False if it's missing or a different object.
+    bool FlushIfSameObject(string path, UInt128 fileId);
+
     void CreateDirectory(string path);
 }
 

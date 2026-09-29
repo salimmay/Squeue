@@ -112,4 +112,34 @@ public class TempFileTests
         Assert.True(_fs.DeleteIfSameObject(path, id));
         Assert.False(File.Exists(path));
     }
+
+    [Fact]
+    public void FlushIfSameObject_flushes_only_the_matching_object()
+    {
+        using var dir = new TestDir();
+        string a = dir.Write("a.bin", [1]);
+        string b = dir.Write("b.bin", [2]);
+        UInt128 bId = _fs.TryGetIdentity(b)!.Value.FileId;
+
+        Assert.False(_fs.FlushIfSameObject(a, bId));
+        Assert.True(_fs.FlushIfSameObject(b, bId));
+        Assert.False(_fs.FlushIfSameObject(dir.PathOf("missing.bin"), bId));
+    }
+
+    [Fact]
+    public void FlushIfSameObject_returns_false_for_read_only_files()
+    {
+        using var dir = new TestDir();
+        string path = dir.Write("ro.bin", [1]);
+        UInt128 id = _fs.TryGetIdentity(path)!.Value.FileId;
+        File.SetAttributes(path, FileAttributes.ReadOnly);
+        try
+        {
+            Assert.False(_fs.FlushIfSameObject(path, id));
+        }
+        finally
+        {
+            File.SetAttributes(path, FileAttributes.Normal);
+        }
+    }
 }

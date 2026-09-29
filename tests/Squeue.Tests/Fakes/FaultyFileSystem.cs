@@ -28,6 +28,8 @@ public sealed class FaultyFileSystem(IFileSystem inner) : IFileSystem
         return result;
     }
 
+    public bool FlushIfSameObject(string path, UInt128 fileId) => inner.FlushIfSameObject(path, fileId);
+
     public bool DeleteIfSameObject(string path, UInt128 fileId)
     {
         Hit(FsOp.Delete, after: false);

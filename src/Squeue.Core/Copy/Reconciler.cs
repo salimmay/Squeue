@@ -44,8 +44,9 @@ public sealed class Reconciler(IFileSystem fs, Journal journal)
                     report.Resumed.Add(entry.Id);
                     return;
                 }
-                journal.SetPhase(attempt.Id, AttemptPhase.Abandoned);
+                // Entry state first: it is safe to repeat while the attempt is still open; the reverse order could strand the entry in Active.
                 journal.SetEntryState(entry.Id, EntryState.Failed, "The destination changed after it was copied. The source was kept.");
+                journal.SetPhase(attempt.Id, AttemptPhase.Abandoned);
                 report.Failed.Add(entry.Id);
                 return;
 
@@ -58,14 +59,16 @@ public sealed class Reconciler(IFileSystem fs, Journal journal)
                     && fs.TryGetIdentity(entry.DestPath) is { } final
                     && final.FileId == tempId)
                 {
+                    fs.FlushIfSameObject(entry.DestPath, tempId); // FileCopier flushes after its rename; this recovered rename gets the same
                     journal.SetPhase(attempt.Id, AttemptPhase.Published, publishedFileId: tempId);
                     report.Resumed.Add(entry.Id);
                     return;
                 }
 
                 RemoveTempIfOurs(attempt, tempPath, report);
-                journal.SetPhase(attempt.Id, AttemptPhase.Abandoned);
+                // Entry state first: it is safe to repeat while the attempt is still open; the reverse order could strand the entry in Active.
                 journal.SetEntryState(entry.Id, EntryState.Pending);
+                journal.SetPhase(attempt.Id, AttemptPhase.Abandoned);
                 report.Reset.Add(entry.Id);
                 return;
         }
