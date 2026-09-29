@@ -65,6 +65,8 @@ public sealed class Journal : IDisposable
         journal.Exec("PRAGMA journal_mode = WAL;");
         journal.Exec("PRAGMA synchronous = FULL;");
         journal.Exec("PRAGMA foreign_keys = ON;");
+        // Several connections (the coordinator and each job's worker) share the file; wait for a writer instead of failing.
+        journal.Exec("PRAGMA busy_timeout = 10000;");
         journal.Exec(Schema);
         journal.Migrate();
         return journal;
@@ -74,7 +76,8 @@ public sealed class Journal : IDisposable
     public void Atomically(Action writes)
     {
         if (_transaction is not null) { writes(); return; }
-        _transaction = _db.BeginTransaction();
+        // BEGIN IMMEDIATE: take the write lock up front, so a read-then-write block can't fail on another connection's commit.
+        _transaction = _db.BeginTransaction(deferred: false);
         try
         {
             writes();

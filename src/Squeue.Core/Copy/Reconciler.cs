@@ -27,12 +27,17 @@ public sealed class Reconciler(IFileSystem fs, Journal journal)
     // Clock slack when deciding whether an un-journaled temp file was created by this attempt (FILETIME units).
     private const long CreationSlack = 2 * 10_000_000;
 
-    public ReconcileReport Run()
+    public ReconcileReport Run() => Run(null);
+
+    /// Reconciles only the attempts whose entry passes <paramref name="include"/> — a job's worker must not touch
+    /// attempts that another job's worker may still be writing.
+    public ReconcileReport Run(Func<Entry, bool>? include)
     {
         var report = new ReconcileReport();
         foreach (var attempt in journal.OpenAttempts())
         {
             var entry = journal.GetEntry(attempt.EntryId);
+            if (include is not null && !include(entry)) continue;
             // Uncertainty keeps data: without the drive we can't tell what happened, so change nothing.
             if (Path.GetPathRoot(entry.DestPath) is { Length: > 0 } root && !Directory.Exists(root))
             {

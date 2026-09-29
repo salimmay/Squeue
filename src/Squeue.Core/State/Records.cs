@@ -9,7 +9,7 @@ public enum EntryState { Pending, Active, Done, Failed }
 /// Journal phases of one attempt, in protocol order. Finished and Abandoned are terminal.
 public enum AttemptPhase { Intent, TempCreated, Written, VerifiedTemp, Published, Verified, Finished, Abandoned }
 
-public enum JobState { Queued, Running, Paused, Done, Cancelled }
+public enum JobState { Queued, Running, Paused, Done, Cancelled, Verifying }
 
 public sealed record JobRow(
     long Id,

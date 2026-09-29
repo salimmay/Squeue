@@ -161,4 +161,20 @@ public class ReconcilerTests
         Assert.Empty(second.Unowned);
         Assert.Equal(filesAfterFirst, Directory.GetFiles(s.Dir.Path, "*", SearchOption.AllDirectories).Order().ToArray());
     }
+
+    [Fact]
+    public void Run_can_be_limited_to_some_entries()
+    {
+        using var s = new CopyScenario();
+        s.WriteSource(TestDir.RandomBytes(1000));
+        long mine = s.AddEntry();
+        long other = s.AddEntry();
+        s.Journal.BeginAttempt(mine, "~tqaaaaaaaaaa.tmp", null);
+        s.Journal.BeginAttempt(other, "~tqbbbbbbbbbb.tmp", null);
+
+        var report = new Reconciler(new WindowsFileSystem(), s.Journal).Run(entry => entry.Id == mine);
+
+        Assert.Equal(new[] { mine }, report.Reset);
+        Assert.NotNull(s.Journal.GetOpenAttempt(other));
+    }
 }
