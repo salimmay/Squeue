@@ -27,6 +27,12 @@ public sealed class RunnerHarness : IDisposable
     public JobRunner Runner { get; private set; }
     public string JournalPath => Dir.PathOf("state.db");
 
+    /// Every snapshot so far, in the order they were published.
+    public JobSnapshot[] Events
+    {
+        get { lock (_lock) return [.. _events]; }
+    }
+
     /// Called on the runner's thread after each snapshot is recorded.
     public Action<JobSnapshot>? OnEvent { get; set; }
 

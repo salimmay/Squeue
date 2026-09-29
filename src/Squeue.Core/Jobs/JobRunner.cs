@@ -7,7 +7,8 @@ using Squeue.Core.State;
 namespace Squeue.Core.Jobs;
 
 /// Runs queued jobs one at a time on its own thread, which is the only thread that touches the journal.
-/// Commands can be called from any thread; they take effect between files, and Pause/Cancel also stop the current file.
+/// Commands can be called from any thread; they take effect between files and during a file's progress reports,
+/// and Pause/Cancel also stop the current file.
 public sealed class JobRunner : IJobQueue
 {
     private readonly IFileSystem _fs;
@@ -157,6 +158,9 @@ public sealed class JobRunner : IJobQueue
 
         var progress = new InlineProgress(p =>
         {
+            // Run waiting commands now so a new job shows up during a long file. This is the runner thread, and
+            // FileCopier never reports progress inside Journal.Atomically, so the commands' journal writes are safe here.
+            DrainCommands();
             // Verification re-reads the file; only the copy stage moves the bar.
             if (p.Stage == CopyStage.Copying) currentBytes = p.BytesDone;
             PublishRunning(force: false);

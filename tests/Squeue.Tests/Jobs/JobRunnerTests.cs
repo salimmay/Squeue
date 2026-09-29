@@ -239,6 +239,33 @@ public class JobRunnerTests
     }
 
     [Fact]
+    public void A_job_queued_during_a_big_file_appears_immediately()
+    {
+        using var h = new RunnerHarness();
+        var big = PlanCard(h, ("big.bin", TestDir.RandomBytes(8 * 1024 * 1024)));
+        h.Dir.Write(Path.Combine("card2", "x.bin"), TestDir.RandomBytes(100));
+        var second = JobPlanner.Plan(h.Fs, [h.Dir.PathOf("card2")], h.Dir.PathOf("backup"));
+        int enqueued = 0;
+        h.OnEvent = s =>
+        {
+            if (s.State == JobState.Running && s.DoneBytes > 0 && Interlocked.Exchange(ref enqueued, 1) == 0)
+                h.Runner.Enqueue(second, OverwritePolicy.Replace, verify: true);
+        };
+        h.Runner.Start();
+
+        h.Runner.Enqueue(big, OverwritePolicy.Replace, verify: true);
+        var firstDone = h.WaitFor(s => s.Name == "card" && s.State == JobState.Done);
+        h.WaitFor(s => s.Name == "card2" && s.State == JobState.Done);
+
+        var events = h.Events.ToList();
+        int queued = events.FindIndex(s => s.Name == "card2" && s.State == JobState.Queued);
+        int done = events.FindIndex(s => s.Id == firstDone.Id && s.State == JobState.Done);
+        Assert.InRange(queued, 0, done - 1);
+        // It arrived while the big file was still copying, not after it finished.
+        Assert.Contains(events.Skip(queued + 1), s => s.Id == firstDone.Id && s.State == JobState.Running && s.DoneBytes < s.TotalBytes);
+    }
+
+    [Fact]
     public void A_subscriber_that_throws_does_not_stop_the_runner()
     {
         using var h = new RunnerHarness();
