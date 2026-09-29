@@ -80,6 +80,58 @@ public class CrashMatrixTests
         Assert.Empty(again.Failed);
     }
 
+    public static TheoryData<FsOp, bool> VerifyFailureCrashPoints() => new()
+    {
+        { FsOp.TryGetIdentity, false }, { FsOp.TryGetIdentity, true },
+        { FsOp.Delete, false }, { FsOp.Delete, true },
+    };
+
+    [Theory]
+    [MemberData(nameof(VerifyFailureCrashPoints))]
+    public void Recovery_after_a_crash_while_handling_a_verification_failure(FsOp op, bool after)
+    {
+        using var s = new CopyScenario();
+        var real = new WindowsFileSystem();
+        var content = TestDir.RandomBytes(3 * Chunk + 123, seed: 7);
+        s.WriteSource(content);
+
+        Directory.CreateDirectory(s.DestDir);
+        string decoy = Path.Combine(s.DestDir, "~tqzzzzzzzzzz.tmp");
+        string unrelated = Path.Combine(s.DestDir, "unrelated.txt");
+        File.WriteAllBytes(decoy, [42]);
+        File.WriteAllBytes(unrelated, [1, 2, 3]);
+
+        long id = s.AddEntry();
+
+        var faulty = new FaultyFileSystem(real) { CorruptVerifyReads = true, CrashAt = (op, after, 1) };
+        var faultyCopier = new FileCopier(faulty, s.Journal, Options);
+        for (int i = 0; i < 3; i++)
+        {
+            try { faultyCopier.CopyEntry(id); }
+            catch (SimulatedCrashException) { break; }
+        }
+        Assert.True(faulty.Crashed, "The crash point was never reached.");
+
+        s.ReopenJournal();
+        new Reconciler(real, s.Journal).Run();
+        var copier = new FileCopier(real, s.Journal, Options);
+        var result = copier.CopyEntry(id);
+        for (int i = 0; i < 2 && result.Outcome == CopyOutcome.RetryNeeded; i++) result = copier.CopyEntry(id);
+
+        Assert.Equal(CopyOutcome.Done, result.Outcome);
+        Assert.Equal(content, File.ReadAllBytes(s.Dest));
+        Assert.Empty(s.Journal.OpenAttempts());
+
+        Assert.Equal(new[] { decoy }, s.TempFiles());
+        Assert.Equal(new byte[] { 42 }, File.ReadAllBytes(decoy));
+        Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(unrelated));
+        Assert.Equal(content, File.ReadAllBytes(s.Src));
+
+        var again = new Reconciler(real, s.Journal).Run();
+        Assert.Empty(again.Reset);
+        Assert.Empty(again.Failed);
+    }
+
     private static void AssertOriginalOrNew(string dest, byte[]? original, byte[] content)
     {
         if (!File.Exists(dest))
