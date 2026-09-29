@@ -1,8 +1,7 @@
 // squeue-bench: compares Squeue's copy engine with Windows' own (CopyFileEx).
 //   squeue-bench make <folder> [--big-mb 2048] [--small-count 2000] [--small-kb 300]
-//   squeue-bench run <source folder> <destination folder> [--chunk-mb 4] [--depth 4]
-// For fair numbers use a real card or a source bigger than RAM. Every engine reads a warm source here
-// (a warm-up pass reads it first), so the comparison measures the write and verify side equally.
+//   squeue-bench run <source folder> <destination folder> [--chunk-mb 4] [--depth 4] [--rounds 3]
+// A warm-up pass reads the source first, so every engine reads it from memory: this measures the write and verify side.
 using System.Diagnostics;
 using System.Globalization;
 using Squeue.Bench;
@@ -13,7 +12,7 @@ using Squeue.Core.State;
 if (args.Length >= 2 && args[0] == "make") return Make(args[1], args);
 if (args.Length >= 3 && args[0] == "run") return Run(args[1], args[2], args);
 Console.WriteLine("Usage:\n  squeue-bench make <folder> [--big-mb N] [--small-count N] [--small-kb N]\n" +
-                  "  squeue-bench run <source folder> <destination folder> [--chunk-mb N] [--depth N]");
+                  "  squeue-bench run <source folder> <destination folder> [--chunk-mb N] [--depth N] [--rounds N]");
 return 1;
 
 static int Option(string[] args, string name, int fallback)
@@ -25,6 +24,11 @@ static int Option(string[] args, string name, int fallback)
 static int Make(string folder, string[] args)
 {
     int bigMb = Option(args, "--big-mb", 2048), count = Option(args, "--small-count", 2000), kb = Option(args, "--small-kb", 300);
+    if (Directory.Exists(folder) && Directory.EnumerateFileSystemEntries(folder).Any())
+    {
+        Console.WriteLine($"Folder isn't empty: {folder}");
+        return 1;
+    }
     Directory.CreateDirectory(Path.Combine(folder, "small"));
     var random = new Random(1);
     var chunk = new byte[4 * 1024 * 1024];
@@ -57,11 +61,39 @@ static int Run(string source, string destination, string[] args)
     var sink = new byte[4 * 1024 * 1024];
     foreach (string f in files) { using var s = File.OpenRead(f); while (s.Read(sink) > 0) { } }
 
-    Console.WriteLine($"{files.Length} files, {bytes / 1048576.0:F0} MB, chunk {chunkMb} MB, depth {depth}\n");
-    Console.WriteLine("| Engine | Seconds | MB/s |\n| --- | ---: | ---: |");
-    Measure("Windows (CopyFileEx)", dest => { foreach (string f in files) WindowsCopy.Copy(f, Target(f, dest)); });
-    Measure("Squeue, no verify", dest => SqueueCopy(null, dest));
-    Measure("Squeue, verify (xxh3)", dest => SqueueCopy("xxh3", dest));
+    int rounds = Math.Max(1, Option(args, "--rounds", 3));
+    Console.WriteLine($"{files.Length} files, {bytes / 1048576.0:F0} MB, chunk {chunkMb} MB, depth {depth}, {rounds} rounds (median)\n\n");
+    var engines = new (string Name, Action<string> Copy)[]
+    {
+        ("Windows (CopyFileEx, cache only)", dest => { foreach (string f in files) WindowsCopy.Copy(f, Target(f, dest)); }),
+        ("Windows + flush each file", dest =>
+        {
+            foreach (string f in files)
+            {
+                string target = Target(f, dest);
+                WindowsCopy.Copy(f, target);
+                using var fs = new FileStream(target, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
+                fs.Flush(flushToDisk: true);
+            }
+        }),
+        ("Squeue, no verify", dest => SqueueCopy(null, dest)),
+        ("Squeue, verify (xxh3)", dest => SqueueCopy("xxh3", dest)),
+    };
+    var times = engines.Select(_ => new List<double>()).ToArray();
+    for (int r = 0; r < rounds; r++)
+        for (int k = 0; k < engines.Length; k++)
+        {
+            int e = (r + k) % engines.Length;
+            times[e].Add(Measure(engines[e].Copy));
+        }
+    Console.WriteLine("| Engine | Median seconds | Median MB/s | Runs (s) |\n| --- | ---: | ---: | --- |");
+    for (int e = 0; e < engines.Length; e++)
+    {
+        var sorted = times[e].OrderBy(t => t).ToList();
+        double median = sorted.Count % 2 == 1 ? sorted[sorted.Count / 2] : (sorted[sorted.Count / 2 - 1] + sorted[sorted.Count / 2]) / 2;
+        string runs = string.Join(", ", times[e].Select(t => t.ToString("F1", CultureInfo.InvariantCulture)));
+        Console.WriteLine($"| {engines[e].Name} | {median:F1} | {bytes / 1048576.0 / median:F0} | {runs} |");
+    }
     return 0;
 
     string Target(string file, string dest)
@@ -95,7 +127,7 @@ static int Run(string source, string destination, string[] args)
         }
     }
 
-    void Measure(string engine, Action<string> copy)
+    double Measure(Action<string> copy)
     {
         string dest = Path.Combine(destination, "squeue-bench-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(dest);
@@ -104,8 +136,7 @@ static int Run(string source, string destination, string[] args)
             var watch = Stopwatch.StartNew();
             copy(dest);
             watch.Stop();
-            double seconds = watch.Elapsed.TotalSeconds;
-            Console.WriteLine($"| {engine} | {seconds:F1} | {bytes / 1048576.0 / seconds:F0} |");
+            return watch.Elapsed.TotalSeconds;
         }
         finally
         {
