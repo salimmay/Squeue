@@ -18,16 +18,27 @@ public sealed record JobPlan(string Name, string Source, string DestRoot, IReadO
 
     /// Folders that couldn't be read and are not included.
     public IReadOnlyList<string> SkippedFolders { get; init; } = [];
+
+    /// Symbolic links and online-only (cloud placeholder) files, which are left out and reported.
+    public int SkippedLinks { get; init; }
 }
 
 /// Turns what the user picked into the list of files to copy.
 public static class JobPlanner
 {
-    // Links and junctions are not followed: they could loop or reach outside what the user picked.
-    private static readonly EnumerationOptions NoRecurse = new()
+    // Linked folders and junctions are not followed: they could loop or reach outside what the user picked.
+    private static readonly EnumerationOptions Folders = new()
     {
         RecurseSubdirectories = false,
         AttributesToSkip = FileAttributes.ReparsePoint,
+        IgnoreInaccessible = false,
+    };
+
+    // Every file is listed, links included, so linked and online-only files can be counted and reported.
+    private static readonly EnumerationOptions Files = new()
+    {
+        RecurseSubdirectories = false,
+        AttributesToSkip = 0,
         IgnoreInaccessible = false,
     };
 
@@ -38,28 +49,29 @@ public static class JobPlanner
         string dest = Path.TrimEndingDirectorySeparator(Path.GetFullPath(destRoot));
         var files = new List<PlannedFile>();
         var skipped = new List<string>();
+        int links = 0;
 
         foreach (string raw in sources)
         {
             string source = Path.TrimEndingDirectorySeparator(Path.GetFullPath(raw));
             if (File.Exists(source))
             {
-                Add(source, Path.Combine(dest, Path.GetFileName(source)));
+                var file = new FileInfo(source);
+                if (file.Attributes.HasFlag(FileAttributes.ReparsePoint)) links++;
+                else files.Add(Planned(fs, file, Path.Combine(dest, Path.GetFileName(source))));
                 continue;
             }
             if (!Directory.Exists(source)) throw new FileNotFoundException($"'{source}' doesn't exist.", source);
             if (IsSameOrInside(dest, source)) throw new ArgumentException($"Can't copy '{source}' into itself.", nameof(destRoot));
 
             string target = Path.Combine(dest, FolderName(source));
-            WalkFolder(source, target, fs, files, skipped);
+            WalkFolder(source, target, fs, files, skipped, ref links);
         }
 
         string first = Path.TrimEndingDirectorySeparator(Path.GetFullPath(sources[0]));
         string name = sources.Count == 1 ? FolderName(first) : $"{sources.Count} items";
         string sourceLabel = sources.Count == 1 ? first : Path.GetDirectoryName(first) ?? first;
-        return new JobPlan(name, sourceLabel, dest, files) { SkippedFolders = skipped };
-
-        void Add(string src, string dst) => files.Add(Planned(fs, new FileInfo(src), dst));
+        return new JobPlan(name, sourceLabel, dest, files) { SkippedFolders = skipped, SkippedLinks = links };
     }
 
     private static PlannedFile Planned(IFileSystem fs, FileInfo source, string destPath)
@@ -71,15 +83,21 @@ public static class JobPlanner
         return new PlannedFile(source.FullName, destPath, source.Length, existing) { ExistingLooksSame = looksSame };
     }
 
-    private static void WalkFolder(string folder, string targetPrefix, IFileSystem fs, List<PlannedFile> files, List<string> skipped)
+    private static void WalkFolder(string folder, string targetPrefix, IFileSystem fs, List<PlannedFile> files, List<string> skipped,
+        ref int links)
     {
         // List and add files in this folder
         try
         {
-            foreach (string file in Directory.EnumerateFiles(folder, "*", NoRecurse).Order(StringComparer.OrdinalIgnoreCase))
+            foreach (var file in new DirectoryInfo(folder).EnumerateFiles("*", Files).OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase))
             {
-                string destPath = Path.Combine(targetPrefix, Path.GetFileName(file));
-                files.Add(Planned(fs, new FileInfo(file), destPath));
+                // Symbolic links and online-only files are not copied (preservation policy); they are counted and reported.
+                if (file.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                {
+                    links++;
+                    continue;
+                }
+                files.Add(Planned(fs, file, Path.Combine(targetPrefix, file.Name)));
             }
         }
         catch (UnauthorizedAccessException) { skipped.Add(folder); return; }
@@ -88,7 +106,7 @@ public static class JobPlanner
         // Recursively walk subfolders
         try
         {
-            foreach (string subfolder in Directory.EnumerateDirectories(folder, "*", NoRecurse).Order(StringComparer.OrdinalIgnoreCase))
+            foreach (string subfolder in Directory.EnumerateDirectories(folder, "*", Folders).Order(StringComparer.OrdinalIgnoreCase))
             {
                 string folderName = Path.GetFileName(subfolder);
                 // Skip Windows system folders silently
@@ -97,7 +115,7 @@ public static class JobPlanner
                     continue;
 
                 string newTarget = Path.Combine(targetPrefix, folderName);
-                WalkFolder(subfolder, newTarget, fs, files, skipped);
+                WalkFolder(subfolder, newTarget, fs, files, skipped, ref links);
             }
         }
         catch (UnauthorizedAccessException) { skipped.Add(folder); }

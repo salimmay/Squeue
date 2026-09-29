@@ -186,6 +186,19 @@ public class ViewModelTests
     }
 
     [Fact]
+    public void The_plan_summary_reports_linked_and_online_only_files()
+    {
+        var file = new PlannedFile(@"E:\DCIM\a", @"F:\Backup\DCIM\a", 10, null);
+        var one = new PlanViewModel(new JobPlan("DCIM", @"E:\DCIM", @"F:\Backup", [file]) { SkippedLinks = 1 }, _ => { }, _ => { });
+        var three = new PlanViewModel(new JobPlan("DCIM", @"E:\DCIM", @"F:\Backup", [file]) { SkippedLinks = 3 }, _ => { }, _ => { });
+        var none = new PlanViewModel(new JobPlan("DCIM", @"E:\DCIM", @"F:\Backup", [file]), _ => { }, _ => { });
+
+        Assert.Equal((true, "1 linked or online-only file will be skipped"), (one.HasLinks, one.LinksNote));
+        Assert.Equal((true, "3 linked or online-only files will be skipped"), (three.HasLinks, three.LinksNote));
+        Assert.Equal((false, (string?)null), (none.HasLinks, none.LinksNote));
+    }
+
+    [Fact]
     public void A_job_paused_by_an_error_says_why()
     {
         var queue = new FakeJobQueue();

@@ -35,6 +35,15 @@ public sealed partial class PlanViewModel(JobPlan plan, Action<PlanViewModel> st
         var n => $"{Format.Count(n, "folder")} couldn't be read and will be skipped",
     };
 
+    public bool HasLinks => Plan.SkippedLinks > 0;
+
+    public string? LinksNote => Plan.SkippedLinks switch
+    {
+        0 => null,
+        1 => "1 linked or online-only file will be skipped",
+        var n => $"{Format.Count(n, "linked or online-only file")} will be skipped",
+    };
+
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(Policy))]
     private bool _overwrite;
