@@ -47,9 +47,32 @@ public class JobRunnerTests
         h.Runner.Enqueue(plan, OverwritePolicy.Skip, verify: true);
         var done = h.WaitFor(s => s.State == JobState.Done);
 
-        Assert.Equal(1, done.TotalFiles);
+        // The existing a.bin differs from the source, so it is kept and reported rather than silently skipped.
+        Assert.Equal((2, 1, 1), (done.TotalFiles, done.DoneFiles, done.FailedFiles));
         Assert.Equal(new byte[] { 9 }, File.ReadAllBytes(h.Dir.PathOf(@"backup\card\a.bin")));
         Assert.True(File.Exists(h.Dir.PathOf(@"backup\card\b.bin")));
+    }
+
+    [Fact]
+    public void Skip_reports_different_files_with_the_same_name()
+    {
+        using var h = new RunnerHarness();
+        var same = TestDir.RandomBytes(100, 1);
+        var c = TestDir.RandomBytes(100, 3);
+        var plan = PlanCard(h, ("a.bin", same), ("b.bin", TestDir.RandomBytes(100, 2)), ("c.bin", c));
+        string existingSame = h.Dir.Write(@"backup\card\a.bin", same);
+        File.SetLastWriteTimeUtc(existingSame, File.GetLastWriteTimeUtc(h.Dir.PathOf(@"card\a.bin")));
+        string existingOther = h.Dir.Write(@"backup\card\b.bin", [4, 2]);
+        plan = JobPlanner.Plan(h.Fs, [h.Dir.PathOf("card")], h.Dir.PathOf("backup")); // again, now that both exist
+        h.Runner.Start();
+
+        h.Runner.Enqueue(plan, OverwritePolicy.Skip, verify: true);
+        var done = h.WaitFor(s => s.State == JobState.Done);
+
+        Assert.Equal((2, 1, 1), (done.TotalFiles, done.DoneFiles, done.FailedFiles));
+        Assert.Equal("A different file with this name is already there. It was not replaced.", done.LastError);
+        Assert.Equal(new byte[] { 4, 2 }, File.ReadAllBytes(existingOther));
+        Assert.Equal(c, File.ReadAllBytes(h.Dir.PathOf(@"backup\card\c.bin")));
     }
 
     [Fact]

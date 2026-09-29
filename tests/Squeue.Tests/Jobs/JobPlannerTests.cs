@@ -64,6 +64,26 @@ public class JobPlannerTests
     }
 
     [Fact]
+    public void Existing_files_are_compared_by_size_and_time()
+    {
+        using var dir = new TestDir();
+        string a = dir.Write(@"card\a.jpg", [1, 2, 3]);
+        string b = dir.Write(@"card\b.jpg", [1, 2, 3]);
+        string c = dir.Write(@"card\c.jpg", [1, 2, 3]);
+        var time = File.GetLastWriteTimeUtc(a);
+        File.SetLastWriteTimeUtc(b, time);
+        File.SetLastWriteTimeUtc(c, time);
+        File.SetLastWriteTimeUtc(dir.Write(@"backup\card\a.jpg", [9, 9, 9]), time); // same size and time
+        File.SetLastWriteTimeUtc(dir.Write(@"backup\card\b.jpg", [9, 9]), time); // different size
+        File.SetLastWriteTimeUtc(dir.Write(@"backup\card\c.jpg", [9, 9, 9]), time.AddMinutes(-5)); // different time
+
+        var plan = JobPlanner.Plan(_fs, [dir.PathOf("card")], dir.PathOf("backup"));
+
+        Assert.Equal(new[] { true, false, false }, plan.Files.Select(f => f.ExistingLooksSame));
+        Assert.Equal((3, 2), (plan.ExistingCount, plan.DifferentCount));
+    }
+
+    [Fact]
     public void Copying_a_folder_into_itself_is_refused()
     {
         using var dir = new TestDir();

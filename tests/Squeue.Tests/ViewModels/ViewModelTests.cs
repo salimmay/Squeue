@@ -147,9 +147,25 @@ public class ViewModelTests
         var vm = new PlanViewModel(plan, _ => { }, _ => { });
 
         Assert.Equal(("Copy DCIM", @"2 files · 2 MB to F:\Backup"), (vm.Title, vm.Summary));
-        Assert.Equal((true, "1 file already exists at the destination"), (vm.HasExisting, vm.ExistingNote));
+        Assert.Equal((true, "1 file already exists at the destination (it differs)"), (vm.HasExisting, vm.ExistingNote));
         vm.Overwrite = true;
         Assert.Equal(OverwritePolicy.Replace, vm.Policy);
+    }
+
+    [Fact]
+    public void The_plan_summary_says_how_many_existing_files_differ()
+    {
+        var existing = new Squeue.Core.FileSystem.FileIdentity(1, (UInt128)2, 3, 4, 5, 6, 0);
+        var plan = new JobPlan("DCIM", @"E:\DCIM", @"F:\Backup",
+        [
+            new PlannedFile(@"E:\DCIM\a", @"F:\Backup\DCIM\a", 3, existing) { ExistingLooksSame = true },
+            new PlannedFile(@"E:\DCIM\b", @"F:\Backup\DCIM\b", 3, existing),
+            new PlannedFile(@"E:\DCIM\c", @"F:\Backup\DCIM\c", 3, existing),
+        ]);
+
+        var vm = new PlanViewModel(plan, _ => { }, _ => { });
+
+        Assert.Equal("3 files already exist at the destination (2 of them differ)", vm.ExistingNote);
     }
 
     [Fact]

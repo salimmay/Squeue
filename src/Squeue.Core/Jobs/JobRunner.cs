@@ -306,13 +306,22 @@ public sealed class JobRunner : IJobQueue
             jobId = journal.CreateJob(verify ? "xxh3" : null, plan.Name, plan.Source, plan.DestRoot);
             foreach (var file in plan.Files)
             {
-                if (file.ExistingDest is not null && policy == OverwritePolicy.Skip) continue;
+                if (file.ExistingDest is not null && policy == OverwritePolicy.Skip)
+                {
+                    if (file.ExistingLooksSame) continue;
+                    // Same name, different file: keep it, and report this one instead of silently leaving it out.
+                    long entryId = journal.AddEntry(jobId, file.SourcePath, file.DestPath, file.Size, ConflictAction.Create, file.ExistingDest);
+                    journal.SetEntryState(entryId, EntryState.Failed, DifferentFileKept);
+                    continue;
+                }
                 var action = file.ExistingDest is null ? ConflictAction.Create : ConflictAction.Replace;
                 journal.AddEntry(jobId, file.SourcePath, file.DestPath, file.Size, action, file.ExistingDest);
             }
         });
         Publish(SnapshotOf(jobId));
     }
+
+    private const string DifferentFileKept = "A different file with this name is already there. It was not replaced.";
 
     private void ChangeState(long jobId, JobState to, params JobState[] from)
     {

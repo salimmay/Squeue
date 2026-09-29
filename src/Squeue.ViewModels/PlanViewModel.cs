@@ -15,8 +15,15 @@ public sealed partial class PlanViewModel(JobPlan plan, Action<PlanViewModel> st
     public string? ExistingNote => Plan.ExistingCount switch
     {
         0 => null,
-        1 => "1 file already exists at the destination",
-        var n => $"{Format.Count(n, "file")} already exist at the destination",
+        1 => "1 file already exists at the destination" + DifferentSuffix,
+        var n => $"{Format.Count(n, "file")} already exist at the destination" + DifferentSuffix,
+    };
+
+    private string DifferentSuffix => Plan.DifferentCount switch
+    {
+        0 => "",
+        _ when Plan.ExistingCount == 1 => " (it differs)",
+        var n => $" ({n} of them differ)",
     };
 
     public bool HasSkipped => Plan.SkippedFolders.Count > 0;

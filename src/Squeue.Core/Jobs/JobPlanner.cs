@@ -2,12 +2,19 @@ using Squeue.Core.FileSystem;
 
 namespace Squeue.Core.Jobs;
 
-public sealed record PlannedFile(string SourcePath, string DestPath, long Size, FileIdentity? ExistingDest);
+public sealed record PlannedFile(string SourcePath, string DestPath, long Size, FileIdentity? ExistingDest)
+{
+    /// The existing destination has the source's size and last-write time, so it is most likely the same file.
+    public bool ExistingLooksSame { get; init; }
+}
 
 public sealed record JobPlan(string Name, string Source, string DestRoot, IReadOnlyList<PlannedFile> Files)
 {
     public long TotalBytes => Files.Sum(f => f.Size);
     public int ExistingCount => Files.Count(f => f.ExistingDest is not null);
+
+    /// Existing destination files that don't look like the source (different size or time).
+    public int DifferentCount => Files.Count(f => f.ExistingDest is not null && !f.ExistingLooksSame);
 
     /// Folders that couldn't be read and are not included.
     public IReadOnlyList<string> SkippedFolders { get; init; } = [];
@@ -52,7 +59,16 @@ public static class JobPlanner
         string sourceLabel = sources.Count == 1 ? first : Path.GetDirectoryName(first) ?? first;
         return new JobPlan(name, sourceLabel, dest, files) { SkippedFolders = skipped };
 
-        void Add(string src, string dst) => files.Add(new PlannedFile(src, dst, new FileInfo(src).Length, fs.TryGetIdentity(dst)));
+        void Add(string src, string dst) => files.Add(Planned(fs, new FileInfo(src), dst));
+    }
+
+    private static PlannedFile Planned(IFileSystem fs, FileInfo source, string destPath)
+    {
+        var existing = fs.TryGetIdentity(destPath);
+        bool looksSame = existing is { } e
+            && e.Size == source.Length
+            && e.LastWriteTime == source.LastWriteTimeUtc.ToFileTimeUtc();
+        return new PlannedFile(source.FullName, destPath, source.Length, existing) { ExistingLooksSame = looksSame };
     }
 
     private static void WalkFolder(string folder, string targetPrefix, IFileSystem fs, List<PlannedFile> files, List<string> skipped)
@@ -63,7 +79,7 @@ public static class JobPlanner
             foreach (string file in Directory.EnumerateFiles(folder, "*", NoRecurse).Order(StringComparer.OrdinalIgnoreCase))
             {
                 string destPath = Path.Combine(targetPrefix, Path.GetFileName(file));
-                files.Add(new PlannedFile(file, destPath, new FileInfo(file).Length, fs.TryGetIdentity(destPath)));
+                files.Add(Planned(fs, new FileInfo(file), destPath));
             }
         }
         catch (UnauthorizedAccessException) { skipped.Add(folder); return; }
