@@ -273,4 +273,22 @@ public class FileCopierTests
     [Fact]
     public void Rejects_unaligned_chunk_sizes() =>
         Assert.Throws<ArgumentException>(() => new FileCopier(_fs, null!, new CopyOptions { ChunkSize = 1000 }));
+
+    [Fact]
+    public void Finishing_refuses_a_destination_that_is_not_the_published_file()
+    {
+        using var s = new CopyScenario();
+        s.WriteSource([1, 2, 3]);
+        long id = s.AddEntry(hash: null);
+        s.WriteDest([5, 5]);
+        long attempt = s.Journal.BeginAttempt(id, "~tqaaaaaaaaaa.tmp", null);
+        s.Journal.SetPhase(attempt, AttemptPhase.Published, publishedFileId: (UInt128)424242);
+
+        var result = new FileCopier(_fs, s.Journal, Options).CopyEntry(id);
+
+        Assert.Equal(CopyOutcome.Failed, result.Outcome);
+        Assert.Equal(new byte[] { 5, 5 }, File.ReadAllBytes(s.Dest));
+        Assert.Equal(EntryState.Failed, s.Journal.GetEntry(id).State);
+        Assert.Empty(s.Journal.OpenAttempts());
+    }
 }

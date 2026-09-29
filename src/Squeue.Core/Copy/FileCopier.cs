@@ -121,6 +121,10 @@ public sealed class FileCopier
 
     private CopyResult FinishPublished(Entry entry, Attempt attempt)
     {
+        // The file at the destination must still be the one this attempt published, whatever phase we resume from.
+        if (_fs.TryGetIdentity(entry.DestPath) is not { } current || current.FileId != attempt.PublishedFileId)
+            return Fail(entry, "The destination changed after it was copied. The source was kept.", attempt.Id);
+
         string? verifiedHash = null;
         bool needsVerification = attempt.Phase == AttemptPhase.Published && entry.HashAlgorithm is not null && entry.DestHash is null;
         if (needsVerification)
