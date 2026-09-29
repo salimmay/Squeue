@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/bench/">
+    <Project Path="bench/Squeue.Bench/Squeue.Bench.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/Squeue.App/Squeue.App.csproj" />
     <Project Path="src/Squeue.Core/Squeue.Core.csproj" />
