@@ -24,6 +24,14 @@ public class CapacityTests
         Assert.Equal((GB, 20 * GB), (Capacity.Headroom(50 * GB), Capacity.Headroom(2000 * GB)));
 
     [Fact]
+    public void Headroom_is_never_more_than_a_tenth_of_the_volume() =>
+        Assert.Equal(8 * GB / 10, Capacity.Headroom(8 * GB));
+
+    [Fact]
+    public void Nothing_left_to_write_never_lacks_space() =>
+        Assert.Null(Capacity.Problem(new VolumeSpace(@"F:\", 0, 100 * GB, 4096), 0, 5 * GB));
+
+    [Fact]
     public void A_job_that_fits_has_no_problem() =>
         Assert.Null(Capacity.Problem(new VolumeSpace(@"F:\", 10 * GB, 100 * GB, 4096), 8 * GB, 0));
 

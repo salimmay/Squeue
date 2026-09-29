@@ -20,14 +20,26 @@ public interface IVolumeSpace
 
 public sealed class WindowsDiskTopology : IDiskTopology
 {
+    /// Server of a \\server\share or \\?\UNC\server\share path; null for local paths (including \\?\X:\ and \\.\X:\).
+    private static string? NetworkServerOf(string full)
+    {
+        const string longUnc = @"\\?\UNC\";
+        if (full.StartsWith(longUnc, StringComparison.OrdinalIgnoreCase)) return full[longUnc.Length..].Split('\\')[0];
+        if (full.StartsWith(@"\\", StringComparison.Ordinal) && !full.StartsWith(@"\\?\", StringComparison.Ordinal)
+            && !full.StartsWith(@"\\.\", StringComparison.Ordinal))
+            return full[2..].Split('\\')[0];
+        return null;
+    }
+
     public IReadOnlyList<string> DisksOf(string path)
     {
         string full = Path.GetFullPath(path);
-        if (full.StartsWith(@"\\", StringComparison.Ordinal) && !full.StartsWith(@"\\?\", StringComparison.Ordinal))
-            return ["net:" + full[2..].Split('\\')[0].ToUpperInvariant()];
+        if (NetworkServerOf(full) is { } server) return ["net:" + server.ToUpperInvariant()];
 
         if (VolumeNative.VolumePathOf(full) is not { } mount) return [];
-        if (VolumeNative.VolumeGuidOf(mount) is not { } volume) return [];
+        // Mapped network drives and subst drives have no volume GUID but are there: one unknown disk.
+        if (VolumeNative.VolumeGuidOf(mount) is not { } volume)
+            return Directory.Exists(mount) ? ["unk:" + mount.ToUpperInvariant()] : [];
         var disks = VolumeNative.DiskNumbersOf(volume);
         return disks is { Count: > 0 }
             ? disks.Select(n => "disk:" + n).ToList()

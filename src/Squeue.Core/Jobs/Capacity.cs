@@ -14,12 +14,13 @@ public static class Capacity
     /// file stays until the verified new one replaces it.
     public static long Need(IEnumerable<long> sizes, long cluster) => sizes.Sum(s => RoundUp(s, cluster));
 
-    /// Always leave max(1 GB, 1 % of the volume) free.
-    public static long Headroom(long totalBytes) => Math.Max(1L << 30, totalBytes / 100);
+    /// Always leave max(1 GB, 1 % of the volume) free, but never more than a tenth of it, so small destinations stay usable.
+    public static long Headroom(long totalBytes) => Math.Min(Math.Max(1L << 30, totalBytes / 100), totalBytes / 10);
 
     /// Null when the job fits; otherwise a sentence saying what's missing.
     public static string? Problem(VolumeSpace space, long need, long reservedByRunningJobs)
     {
+        if (need <= 0) return null;
         long headroom = Headroom(space.TotalBytes);
         long available = space.FreeBytes - reservedByRunningJobs - headroom;
         if (available >= need) return null;

@@ -22,6 +22,7 @@ public sealed record SchedulerResult(
 /// One scheduling pass. A pure function, so its rules are table-tested:
 /// a job starts only when all its disks are free; a job never starts ahead of an earlier queued job that shares
 /// any of its disks; jobs that share no disk with a blocked job start as soon as their own disks are free.
+/// A job with no disks starts at once (callers pause jobs whose drive is missing before the pass).
 public static class Scheduler
 {
     public static SchedulerResult Pass(IReadOnlyList<SchedulerJob> queue, IReadOnlyDictionary<string, long> busy,

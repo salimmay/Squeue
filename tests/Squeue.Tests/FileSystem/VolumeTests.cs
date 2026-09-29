@@ -25,9 +25,11 @@ public class VolumeTests
     public void A_missing_drive_has_no_disks() =>
         Assert.Empty(new WindowsDiskTopology().DisksOf(MissingDrive() + "photos"));
 
-    [Fact]
-    public void A_network_share_is_one_disk_per_server() =>
-        Assert.Equal(new[] { "net:NAS" }, new WindowsDiskTopology().DisksOf(@"\\nas\photos\2026"));
+    [Theory]
+    [InlineData(@"\\nas\photos\2026")]
+    [InlineData(@"\\?\UNC\nas\photos")]
+    public void A_network_share_is_one_disk_per_server(string path) =>
+        Assert.Equal(new[] { "net:NAS" }, new WindowsDiskTopology().DisksOf(path));
 
     [Fact]
     public void Free_space_is_read_for_a_folder()
