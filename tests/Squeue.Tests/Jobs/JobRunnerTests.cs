@@ -142,6 +142,52 @@ public class JobRunnerTests
     }
 
     [Fact]
+    public void Resume_finishes_a_job_whose_attempt_was_left_unreconciled()
+    {
+        // The state left when recovery had to wait for a drive: a paused job with an attempt that was never reconciled.
+        using var h = new RunnerHarness();
+        var content = TestDir.RandomBytes(10_000);
+        string src = h.Dir.Write(@"card\a.bin", content);
+        string dest = h.Dir.PathOf(@"backup\a.bin");
+        long jobId, entryId;
+        using (var journal = Journal.Open(h.JournalPath))
+        {
+            jobId = journal.CreateJob("xxh3", "card", h.Dir.PathOf("card"), h.Dir.PathOf("backup"));
+            entryId = journal.AddEntry(jobId, src, dest, content.Length, ConflictAction.Create, null);
+            journal.SetJobState(jobId, JobState.Paused);
+        }
+        h.Runner.Start();
+        h.WaitFor(s => s.Id == jobId && s.State == JobState.Paused);
+        using (var journal = Journal.Open(h.JournalPath))
+        {
+            journal.BeginAttempt(entryId, "~tqaaaaaaaaaa.tmp", null);
+        }
+
+        h.Runner.Resume(jobId);
+        // Wait for Done, or for the job to pause again with a reason (the bug this pins).
+        var end = h.WaitFor(s => s.Id == jobId && (s.State == JobState.Done || s.State == JobState.Paused && s.LastError != null));
+
+        Assert.Equal(JobState.Done, end.State);
+        Assert.Equal(content, File.ReadAllBytes(dest));
+    }
+
+    [Fact]
+    public void Replacing_files_always_verifies_even_if_verification_was_turned_off()
+    {
+        using var h = new RunnerHarness();
+        h.Dir.Write(@"backup\card\a.bin", [9]);
+        var plan = PlanCard(h, ("a.bin", TestDir.RandomBytes(100)));
+        h.Runner.Start();
+
+        h.Runner.Enqueue(plan, OverwritePolicy.Replace, verify: false);
+        var done = h.WaitFor(s => s.State == JobState.Done);
+        h.Runner.Dispose();
+
+        using var journal = Journal.Open(h.JournalPath);
+        Assert.Equal("xxh3", journal.GetJob(done.Id).HashAlgorithm);
+    }
+
+    [Fact]
     public void A_destination_that_appears_mid_job_fails_that_file_and_keeps_it()
     {
         using var h = new RunnerHarness();

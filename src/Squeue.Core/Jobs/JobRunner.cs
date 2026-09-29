@@ -138,6 +138,12 @@ public sealed class JobRunner : IJobQueue
     private void RunJob(FileCopier copier, long jobId)
     {
         var journal = _journal!;
+        // Attempts that recovery had to leave alone (their drive was missing) are settled now, before copying resumes.
+        if (journal.OpenAttempts().Count > 0)
+        {
+            try { new Reconciler(_fs, journal).Run(); }
+            catch (Exception ex) { Trace.TraceError($"Recovery before resuming did not complete: {ex}"); }
+        }
         journal.SetJobState(jobId, JobState.Running);
         var job = journal.GetJob(jobId);
         var entries = journal.EntriesOf(jobId);
@@ -310,9 +316,11 @@ public sealed class JobRunner : IJobQueue
     {
         var journal = _journal!;
         long jobId = 0;
+        // An existing file is only ever replaced by a verified copy, whatever the caller asked for.
+        bool mustVerify = verify || (policy == OverwritePolicy.Replace && plan.ExistingCount > 0);
         journal.Atomically(() =>
         {
-            jobId = journal.CreateJob(verify ? "xxh3" : null, plan.Name, plan.Source, plan.DestRoot);
+            jobId = journal.CreateJob(mustVerify ? "xxh3" : null, plan.Name, plan.Source, plan.DestRoot);
             foreach (var file in plan.Files)
             {
                 if (file.ExistingDest is not null && policy == OverwritePolicy.Skip)
