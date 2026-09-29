@@ -232,7 +232,7 @@ public sealed class FileCopier
             int failures = _journal.RecordVerifyFailure(entry.Id, replaceTarget);
             if (failures >= 2)
             {
-                result = Fail(entry, "Verification failed twice. The source was kept.", attemptId);
+                result = Fail(entry, "Verification failed twice. The copy at the destination may be damaged; the source was kept.", attemptId);
                 return;
             }
             _journal.SetEntryState(entry.Id, EntryState.Pending);
