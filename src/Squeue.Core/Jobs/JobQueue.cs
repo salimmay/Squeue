@@ -46,4 +46,8 @@ public sealed record JobRunnerOptions
 
     /// Minimum time between progress snapshots of a running job. State changes are always published at once.
     public TimeSpan ProgressInterval { get; init; } = TimeSpan.FromMilliseconds(250);
+
+    /// How long Dispose waits for the current file to stop. The runner thread is a background thread, so the
+    /// process can still exit after this; the copy protocol makes a stop mid-write safe.
+    public TimeSpan ShutdownTimeout { get; init; } = TimeSpan.FromSeconds(5);
 }

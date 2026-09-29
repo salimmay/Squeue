@@ -21,19 +21,27 @@ public partial class App : Application
             Shutdown();
             return;
         }
-        DispatcherUnhandledException += (_, args) =>
+        try
         {
-            MessageBox.Show(args.Exception.Message, "Squeue", MessageBoxButton.OK, MessageBoxImage.Error);
-            args.Handled = true;
-        };
-        string journalPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Squeue", "state.db");
-        _runner = new JobRunner(new WindowsFileSystem(), journalPath);
-        var viewModel = new MainViewModel(_runner, new SystemDrives(), action => Dispatcher.BeginInvoke(action));
-        var window = new MainWindow(viewModel);
-        MainWindow = window;
-        window.Show();
-        _runner.Start();
+            DispatcherUnhandledException += (_, args) =>
+            {
+                MessageBox.Show(args.Exception.Message, "Squeue", MessageBoxButton.OK, MessageBoxImage.Error);
+                args.Handled = true;
+            };
+            string journalPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Squeue", "state.db");
+            _runner = new JobRunner(new WindowsFileSystem(), journalPath);
+            var viewModel = new MainViewModel(_runner, new SystemDrives(), action => Dispatcher.BeginInvoke(action));
+            var window = new MainWindow(viewModel);
+            MainWindow = window;
+            window.Show();
+            _runner.Start();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Squeue", MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown();
+        }
     }
 
     protected override void OnExit(ExitEventArgs e)

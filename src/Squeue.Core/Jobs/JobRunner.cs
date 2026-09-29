@@ -61,7 +61,8 @@ public sealed class JobRunner : IJobQueue
         Post(() => ChangeState(jobId, JobState.Cancelled, JobState.Queued, JobState.Running, JobState.Paused));
     }
 
-    /// Stops the current file (cleaned up, or left to finish next launch) and ends the runner thread.
+    /// Stops the current file (cleaned up, or left to finish next launch) and ends the runner thread,
+    /// waiting at most ShutdownTimeout for it.
     public void Dispose()
     {
         Thread? thread;
@@ -73,7 +74,9 @@ public sealed class JobRunner : IJobQueue
             thread = _thread;
         }
         _commands.CompleteAdding();
-        thread?.Join();
+        // A drive that stopped responding can block a read for a long time; never let that hang closing the app.
+        if (thread is not null && !thread.Join(_options.ShutdownTimeout))
+            Trace.TraceWarning("The job runner did not stop in time; it is left to end with the process.");
     }
 
     /// A command sent during or after shutdown is dropped.
