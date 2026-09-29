@@ -59,13 +59,14 @@ public sealed class Journal : IDisposable
     public static Journal Open(string path)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-        var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString());
+        var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Pooling = false, DefaultTimeout = 10 }.ToString());
         db.Open();
         var journal = new Journal(db);
         journal.Exec("PRAGMA journal_mode = WAL;");
         journal.Exec("PRAGMA synchronous = FULL;");
         journal.Exec("PRAGMA foreign_keys = ON;");
         // Several connections (the coordinator and each job's worker) share the file; wait for a writer instead of failing.
+        // DefaultTimeout (connection string) covers commands; the PRAGMA makes SQLite's own busy handler wait the same.
         journal.Exec("PRAGMA busy_timeout = 10000;");
         journal.Exec(Schema);
         journal.Migrate();
