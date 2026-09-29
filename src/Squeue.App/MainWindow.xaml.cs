@@ -55,7 +55,7 @@ public partial class MainWindow : Window
             var plan = await Task.Run(() => JobPlanner.Plan(_fs, sources, destination));
             _viewModel.ProposePlan(plan);
         }
-        catch (Exception ex) when (ex is IOException or ArgumentException or UnauthorizedAccessException)
+        catch (Exception ex)
         {
             MessageBox.Show(this, ex.Message, "Squeue", MessageBoxButton.OK, MessageBoxImage.Warning);
         }

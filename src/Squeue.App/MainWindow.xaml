@@ -53,11 +53,11 @@
                         <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
                             <TextBlock Text="{Binding Percent}" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"
                                        Margin="0,0,6,0" Visibility="{Binding IsRunning, Converter={StaticResource Visible}}" />
-                            <Button Style="{StaticResource IconButton}" Content="&#xE769;" ToolTip="Pause"
+                            <Button Style="{StaticResource IconButton}" Content="&#xE769;" ToolTip="Pause" AutomationProperties.Name="Pause"
                                     Command="{Binding PauseCommand}" Visibility="{Binding CanPause, Converter={StaticResource Visible}}" />
-                            <Button Style="{StaticResource IconButton}" Content="&#xE768;" ToolTip="Resume"
+                            <Button Style="{StaticResource IconButton}" Content="&#xE768;" ToolTip="Resume" AutomationProperties.Name="Resume"
                                     Command="{Binding ResumeCommand}" Visibility="{Binding CanResume, Converter={StaticResource Visible}}" />
-                            <Button Style="{StaticResource IconButton}" Content="&#xE711;" ToolTip="Cancel"
+                            <Button Style="{StaticResource IconButton}" Content="&#xE711;" ToolTip="Cancel" AutomationProperties.Name="Cancel"
                                     Command="{Binding CancelCommand}" />
                         </StackPanel>
                     </Grid>
@@ -94,8 +94,8 @@
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
             </StackPanel>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
-                <Button Style="{StaticResource IconButton}" Content="&#xE8B7;" ToolTip="Copy folders" Click="OnAddFolders" />
-                <Button Style="{StaticResource IconButton}" Content="&#xE8E5;" ToolTip="Copy files" Click="OnAddFiles" />
+                <Button Style="{StaticResource IconButton}" Content="&#xE8B7;" ToolTip="Copy folders" AutomationProperties.Name="Copy folders" Click="OnAddFolders" />
+                <Button Style="{StaticResource IconButton}" Content="&#xE8E5;" ToolTip="Copy files" AutomationProperties.Name="Copy files" Click="OnAddFiles" />
             </StackPanel>
         </Grid>
 

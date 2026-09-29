@@ -9,10 +9,23 @@ namespace Squeue.App;
 public partial class App : Application
 {
     private JobRunner? _runner;
+    private Mutex? _singleInstance;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        _singleInstance = new Mutex(initiallyOwned: true, $"Squeue.SingleInstance.{Environment.UserName}", out bool createdNew);
+        if (!createdNew)
+        {
+            MessageBox.Show("Squeue is already running.", "Squeue", MessageBoxButton.OK, MessageBoxImage.Information);
+            Shutdown();
+            return;
+        }
+        DispatcherUnhandledException += (_, args) =>
+        {
+            MessageBox.Show(args.Exception.Message, "Squeue", MessageBoxButton.OK, MessageBoxImage.Error);
+            args.Handled = true;
+        };
         string journalPath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Squeue", "state.db");
         _runner = new JobRunner(new WindowsFileSystem(), journalPath);
@@ -27,6 +40,8 @@ public partial class App : Application
     {
         // Stops the current file safely; unfinished jobs carry on at the next launch.
         _runner?.Dispose();
+        if (_runner is not null) _singleInstance?.ReleaseMutex();
+        _singleInstance?.Dispose();
         base.OnExit(e);
     }
 }
