@@ -19,6 +19,8 @@ public sealed class JobRunner : IJobQueue
     private CancellationTokenSource? _runningStop;
     private Thread? _thread;
     private Journal? _journal;
+    private bool _disposed;
+    private readonly Dictionary<long, string> _jobErrors = new(); // runner thread only
 
     public JobRunner(IFileSystem fs, string journalPath, JobRunnerOptions? options = null)
     {
@@ -31,62 +33,95 @@ public sealed class JobRunner : IJobQueue
 
     public void Start()
     {
-        if (_thread is not null) throw new InvalidOperationException("The runner is already started.");
-        _thread = new Thread(Run) { IsBackground = true, Name = "Squeue job runner" };
-        _thread.Start();
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_thread is not null) throw new InvalidOperationException("The runner is already started.");
+            _thread = new Thread(Run) { IsBackground = true, Name = "Squeue job runner" };
+            _thread.Start();
+        }
     }
 
     public void Enqueue(JobPlan plan, OverwritePolicy policy, bool verify) =>
-        _commands.Add(() => AddJob(plan, policy, verify));
+        Post(() => AddJob(plan, policy, verify));
 
     public void Pause(long jobId)
     {
         StopIfRunning(jobId);
-        _commands.Add(() => ChangeState(jobId, JobState.Paused, JobState.Queued, JobState.Running));
+        Post(() => ChangeState(jobId, JobState.Paused, JobState.Queued, JobState.Running));
     }
 
     public void Resume(long jobId) =>
-        _commands.Add(() => ChangeState(jobId, JobState.Queued, JobState.Paused));
+        Post(() => ChangeState(jobId, JobState.Queued, JobState.Paused));
 
     public void Cancel(long jobId)
     {
         StopIfRunning(jobId);
-        _commands.Add(() => ChangeState(jobId, JobState.Cancelled, JobState.Queued, JobState.Running, JobState.Paused));
+        Post(() => ChangeState(jobId, JobState.Cancelled, JobState.Queued, JobState.Running, JobState.Paused));
     }
 
     /// Stops the current file (cleaned up, or left to finish next launch) and ends the runner thread.
     public void Dispose()
     {
+        Thread? thread;
+        lock (_gate)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _runningStop?.Cancel();
+            thread = _thread;
+        }
         _commands.CompleteAdding();
-        lock (_gate) _runningStop?.Cancel();
-        _thread?.Join();
-        _commands.Dispose();
+        thread?.Join();
+    }
+
+    /// A command sent during or after shutdown is dropped.
+    private void Post(Action command)
+    {
+        try { _commands.Add(command); }
+        catch (InvalidOperationException) { }
+    }
+
+    private static void RunCommand(Action command)
+    {
+        try { command(); }
+        catch (Exception ex) { Trace.TraceError($"Job runner command failed: {ex}"); }
     }
 
     private void Run()
     {
-        using var journal = Journal.Open(_journalPath);
-        _journal = journal;
-        new Reconciler(_fs, journal).Run();
-        foreach (var job in journal.Jobs())
+        try
         {
-            // A job that was running when the app stopped goes back in the queue.
-            if (job.State == JobState.Running) journal.SetJobState(job.Id, JobState.Queued);
-        }
-        foreach (var job in journal.Jobs()) Publish(SnapshotOf(job.Id));
-
-        var copier = new FileCopier(_fs, journal, _options.Copy);
-        while (!_commands.IsAddingCompleted)
-        {
-            DrainCommands();
-            var next = journal.Jobs().FirstOrDefault(j => j.State == JobState.Queued);
-            if (next is not null)
+            using var journal = Journal.Open(_journalPath);
+            _journal = journal;
+            try { new Reconciler(_fs, journal).Run(); }
+            catch (Exception ex) { Trace.TraceError($"Startup recovery failed: {ex}"); }
+            foreach (var job in journal.Jobs())
             {
-                RunJob(copier, next.Id);
-                continue;
+                // A job that was running when the app stopped goes back in the queue.
+                if (job.State == JobState.Running) journal.SetJobState(job.Id, JobState.Queued);
             }
-            try { _commands.Take()(); } // nothing queued: wait for a command
-            catch (InvalidOperationException) { break; } // Dispose was called while waiting
+            foreach (var job in journal.Jobs()) Publish(SnapshotOf(job.Id));
+
+            var copier = new FileCopier(_fs, journal, _options.Copy);
+            while (!_commands.IsAddingCompleted)
+            {
+                DrainCommands();
+                var next = journal.Jobs().FirstOrDefault(j => j.State == JobState.Queued);
+                if (next is not null)
+                {
+                    RunJob(copier, next.Id);
+                    continue;
+                }
+                Action command;
+                try { command = _commands.Take(); } // nothing queued: wait for a command
+                catch (InvalidOperationException) { break; } // Dispose was called while waiting
+                RunCommand(command);
+            }
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"The job runner stopped after an unexpected error: {ex}");
         }
     }
 
@@ -102,6 +137,7 @@ public sealed class JobRunner : IJobQueue
         {
             _runningJobId = jobId;
             _runningStop = stop;
+            if (_disposed) stop.Cancel();
         }
 
         var clock = Stopwatch.StartNew();
@@ -133,12 +169,22 @@ public sealed class JobRunner : IJobQueue
             {
                 if (entry.State is EntryState.Done or EntryState.Failed) continue;
                 DrainCommands();
-                if (stop.IsCancellationRequested || journal.GetJob(jobId).State != JobState.Running) break;
+                if (stop.IsCancellationRequested || _commands.IsAddingCompleted || journal.GetJob(jobId).State != JobState.Running) break;
 
                 currentFile = Path.GetFileName(entry.SrcPath);
                 currentBytes = 0;
-                var result = CopyOne(copier, entry.Id, progress, stop.Token);
+                var result = CopyOne(copier, entry.Id, progress, stop.Token, out string? stoppedReason);
                 if (result.Outcome == CopyOutcome.Cancelled) break;
+                if (stoppedReason is not null)
+                {
+                    // A drive or the journal misbehaved: this is not the file's fault. Clean up and pause the job.
+                    try { new Reconciler(_fs, journal).Run(); }
+                    catch (Exception ex) { Trace.TraceError($"Recovery after a failure did not complete: {ex}"); }
+                    _jobErrors[jobId] = stoppedReason;
+                    journal.SetJobState(jobId, JobState.Paused);
+                    Publish(SnapshotOf(jobId));
+                    break;
+                }
 
                 currentBytes = 0;
                 if (result.Outcome == CopyOutcome.Done)
@@ -150,7 +196,7 @@ public sealed class JobRunner : IJobQueue
                 {
                     counters.Failed(entry.PlannedSize, result.Message);
                 }
-                PublishRunning(force: true);
+                PublishRunning(force: false);
             }
         }
         finally
@@ -172,8 +218,9 @@ public sealed class JobRunner : IJobQueue
         Publish(SnapshotOf(jobId));
     }
 
-    private CopyResult CopyOne(FileCopier copier, long entryId, IProgress<CopyProgress> progress, CancellationToken stop)
+    private CopyResult CopyOne(FileCopier copier, long entryId, IProgress<CopyProgress> progress, CancellationToken stop, out string? stoppedReason)
     {
+        stoppedReason = null;
         var journal = _journal!;
         try
         {
@@ -194,9 +241,9 @@ public sealed class JobRunner : IJobQueue
             }
             return result;
         }
-        catch (IOException ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            journal.SetEntryState(entryId, EntryState.Failed, ex.Message);
+            stoppedReason = ex.Message;
             return new CopyResult(CopyOutcome.Failed, ex.Message);
         }
     }
@@ -223,6 +270,7 @@ public sealed class JobRunner : IJobQueue
         var journal = _journal!;
         if (!from.Contains(journal.GetJob(jobId).State)) return;
         journal.SetJobState(jobId, to);
+        if (to == JobState.Queued) _jobErrors.Remove(jobId);
         Publish(SnapshotOf(jobId));
     }
 
@@ -236,7 +284,7 @@ public sealed class JobRunner : IJobQueue
 
     private void DrainCommands()
     {
-        while (_commands.TryTake(out var command)) command();
+        while (_commands.TryTake(out var command)) RunCommand(command);
     }
 
     private JobSnapshot SnapshotOf(long jobId)
@@ -246,12 +294,19 @@ public sealed class JobRunner : IJobQueue
         return Snapshot(journal.GetJob(jobId), counters, counters.FinishedBytes, null, 0);
     }
 
-    private static JobSnapshot Snapshot(JobRow job, JobCounters c, long doneBytes, string? currentFile, double speed) =>
+    private JobSnapshot Snapshot(JobRow job, JobCounters c, long doneBytes, string? currentFile, double speed) =>
         new(job.Id, job.Name ?? "Copy", job.Source ?? "", job.DestRoot ?? "", job.State,
-            c.Total, c.DoneCount, c.FailedCount, c.TotalBytes, doneBytes, currentFile, speed, c.LastError,
+            c.Total, c.DoneCount, c.FailedCount, c.TotalBytes, doneBytes, currentFile, speed, _jobErrors.TryGetValue(job.Id, out var e) ? e : c.LastError,
             DateTime.FromFileTimeUtc(job.CreatedAt));
 
-    private void Publish(JobSnapshot snapshot) => JobChanged?.Invoke(snapshot);
+    private void Publish(JobSnapshot snapshot)
+    {
+        foreach (var handler in JobChanged?.GetInvocationList() ?? [])
+        {
+            try { ((Action<JobSnapshot>)handler)(snapshot); }
+            catch (Exception ex) { Trace.TraceError($"A job event subscriber failed: {ex}"); }
+        }
+    }
 
     private sealed class InlineProgress(Action<CopyProgress> report) : IProgress<CopyProgress>
     {

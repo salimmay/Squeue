@@ -160,4 +160,50 @@ public class JobRunnerTests
 
         Assert.Equal((0, 1.0), (done.TotalFiles, done.Fraction));
     }
+
+    [Fact]
+    public void An_unexpected_error_pauses_the_job_and_resume_finishes_it()
+    {
+        using var h = new RunnerHarness(new FaultyFileSystem(new WindowsFileSystem()) { CrashAt = (FsOp.OpenForVerify, false, 1) });
+        var content = TestDir.RandomBytes(100_000);
+        var plan = PlanCard(h, ("a.bin", content));
+        h.Runner.Start();
+
+        h.Runner.Enqueue(plan, OverwritePolicy.Replace, verify: true);
+        var p = h.WaitFor(s => s.State == JobState.Paused);
+
+        Assert.Contains("Simulated crash", p.LastError);
+        h.Runner.Resume(p.Id);
+        h.WaitFor(s => s.Id == p.Id && s.State == JobState.Done);
+        Assert.Equal(content, File.ReadAllBytes(h.Dir.PathOf(@"backup\card\a.bin")));
+        Assert.Empty(TempFilesUnder(h.Dir.PathOf("backup")));
+    }
+
+    [Fact]
+    public void A_subscriber_that_throws_does_not_stop_the_runner()
+    {
+        using var h = new RunnerHarness();
+        h.OnEvent = _ => throw new InvalidOperationException("boom");
+        var plan = PlanCard(h, ("a.bin", TestDir.RandomBytes(100)));
+        h.Runner.Start();
+
+        h.Runner.Enqueue(plan, OverwritePolicy.Replace, verify: true);
+
+        h.WaitFor(s => s.State == JobState.Done);
+    }
+
+    [Fact]
+    public void Commands_after_dispose_are_ignored_and_dispose_can_be_called_twice()
+    {
+        using var h = new RunnerHarness();
+        h.Runner.Start();
+        h.Runner.Dispose();
+
+        h.Runner.Pause(1);
+        h.Runner.Resume(1);
+        h.Runner.Cancel(1);
+        h.Runner.Dispose();
+
+        Assert.Throws<ObjectDisposedException>(() => h.Runner.Start());
+    }
 }
