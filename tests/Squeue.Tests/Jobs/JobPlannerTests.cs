@@ -80,4 +80,28 @@ public class JobPlannerTests
         using var dir = new TestDir();
         Assert.Throws<FileNotFoundException>(() => JobPlanner.Plan(_fs, [dir.PathOf("nope")], dir.PathOf("backup")));
     }
+
+    [Theory]
+    [InlineData(@"F:\Backup", @"F:\", true)]
+    [InlineData(@"F:\", @"F:\", true)]
+    [InlineData(@"E:\card\copy", @"E:\card", true)]
+    [InlineData(@"E:\CARD\copy", @"e:\card", true)]
+    [InlineData(@"E:\cards", @"E:\card", false)]
+    [InlineData(@"E:\backup", @"F:\", false)]
+    public void IsSameOrInside_handles_roots_prefixes_and_case(string path, string folder, bool expected) =>
+        Assert.Equal(expected, JobPlanner.IsSameOrInside(path, folder));
+
+    [Fact]
+    public void Windows_system_folders_are_left_out()
+    {
+        using var dir = new TestDir();
+        dir.Write(@"card\System Volume Information\x.dat", new byte[1]);
+        string a = dir.Write(@"card\a.jpg", new byte[1]);
+
+        var plan = JobPlanner.Plan(_fs, [dir.PathOf("card")], dir.PathOf("backup"));
+
+        Assert.Single(plan.Files);
+        Assert.Equal(a, plan.Files[0].SourcePath);
+        Assert.Empty(plan.SkippedFolders);
+    }
 }
