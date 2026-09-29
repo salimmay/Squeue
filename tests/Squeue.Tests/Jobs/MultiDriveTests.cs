@@ -247,4 +247,46 @@ public class MultiDriveTests
 
         Assert.StartsWith("Squeue couldn't read this job's drives: ", paused.LastError);
     }
+
+    [Fact]
+    public void An_active_file_without_a_published_copy_still_needs_the_card()
+    {
+        var gates = new GateFileSystem(new WindowsFileSystem());
+        using var h = new RunnerHarness(gates, Topology());
+        var content = TestDir.RandomBytes(20_000, 1);
+        string src = h.Dir.Write(@"cardA1\a.bin", content);
+        long jobId, entryId;
+        using (var journal = Journal.Open(h.JournalPath))
+        {
+            jobId = journal.CreateJob("xxh3", "cardA1", h.Dir.PathOf("cardA1"), h.Dir.PathOf("hddA"));
+            entryId = journal.AddEntry(jobId, src, h.Dir.PathOf(@"hddA\cardA1\a.bin"), content.Length, ConflictAction.Create, null);
+            journal.SetJobState(jobId, JobState.Paused);
+        }
+        var second = Plan(h, "cardA2", "ssd");
+        var holdA = gates.HoldSourcesUnder(h.Dir.PathOf("cardA1"));
+        try
+        {
+            h.Runner.Start();
+            h.WaitFor(s => s.Id == jobId && s.State == JobState.Paused);
+            // What recovery leaves when the destination was missing: the entry Active, its attempt still at Intent.
+            using (var journal = Journal.Open(h.JournalPath))
+            {
+                journal.BeginAttempt(entryId, "~tqaaaaaaaaaa.tmp", null);
+                journal.SetEntryState(entryId, EntryState.Active);
+            }
+
+            h.Runner.Resume(jobId);
+            var started = h.WaitFor(s => s.Id == jobId && s.State is JobState.Running or JobState.Verifying);
+            Assert.Equal(JobState.Running, started.State);
+
+            h.Runner.Enqueue(second, OverwritePolicy.Replace, verify: true);
+            var waiting = h.WaitFor(s => s.Name == "cardA2" && s.WaitingFor != null);
+            Assert.Contains("cardA1", waiting.WaitingFor);
+        }
+        finally { holdA.Set(); }
+
+        h.WaitFor(s => s.Id == jobId && s.State == JobState.Done);
+        h.WaitFor(s => s.Name == "cardA2" && s.State == JobState.Done);
+        Assert.Equal(content, File.ReadAllBytes(h.Dir.PathOf(@"hddA\cardA1\a.bin")));
+    }
 }

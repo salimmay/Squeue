@@ -228,7 +228,11 @@ public sealed class JobRunner : IJobQueue
     private JobResources ResourcesOf(JobRow job, IReadOnlyList<EntryRow> entries, Dictionary<string, IReadOnlyList<string>> disksOf)
     {
         string dest = job.DestRoot ?? "";
-        var pending = entries.Where(e => e.State == EntryState.Pending).ToList();
+        // An Active entry needs the source again unless its copy is published: recovery leaves an earlier-phase attempt
+        // alone while the destination is missing, and the worker's own recovery then resets it to be copied.
+        var pending = entries
+            .Where(e => e.State == EntryState.Pending || e.State == EntryState.Active && !HasPublishedCopy(e.Id))
+            .ToList();
         bool verifyOnly = pending.Count == 0 && entries.Any(e => e.State == EntryState.Active);
 
         IReadOnlyList<string> Resolve(string path)
@@ -255,6 +259,9 @@ public sealed class JobRunner : IJobQueue
 
         JobResources Missing(string root) => new(new HashSet<string>(), new HashSet<string>(), root, dest, [], false);
     }
+
+    private bool HasPublishedCopy(long entryId) =>
+        _journal!.GetOpenAttempt(entryId) is { Phase: AttemptPhase.Published or AttemptPhase.Verified };
 
     private string? CapacityProblem(JobResources r)
     {
