@@ -5,6 +5,7 @@ namespace Squeue.Core.State;
 
 /// The operation journal. Every method commits before it returns (synchronous = FULL),
 /// so anything the copier does after a call can rely on that state surviving a crash.
+/// Not thread-safe: use one Journal from one thread at a time.
 public sealed class Journal : IDisposable
 {
     private const string Schema = """

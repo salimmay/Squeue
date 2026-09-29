@@ -83,6 +83,23 @@ public class JournalTests
     }
 
     [Fact]
+    public void Committed_state_is_visible_from_a_second_connection_without_closing_the_first()
+    {
+        using var dir = new TestDir();
+        string path = dir.PathOf("state.db");
+        long entry;
+        using var journalA = Journal.Open(path);
+        {
+            entry = journalA.AddEntry(journalA.CreateJob("xxh3"), "a", "b", 1, ConflictAction.Create, null);
+            journalA.BeginAttempt(entry, "~tqaaaaaaaaaa.tmp", null);
+
+            using var journalB = Journal.Open(path);
+            Assert.Equal("a", journalB.GetEntry(entry).SrcPath);
+            Assert.Single(journalB.OpenAttempts());
+        }
+    }
+
+    [Fact]
     public void RecordVerifyFailure_switches_to_replacing_the_published_file()
     {
         using var dir = new TestDir();
