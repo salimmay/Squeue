@@ -223,4 +223,28 @@ public class MultiDriveTests
         Assert.Equal(new[] { EntryState.Done, EntryState.Pending }, entries.Select(e => e.State));
         Assert.Equal(1, journal.GetEntry(entries[1].Id).VerifyFailures);
     }
+
+    [Fact]
+    public void A_job_whose_drives_cannot_be_read_is_paused_and_the_others_still_run()
+    {
+        using var h = new RunnerHarness();
+        // '|' and '<' are accepted by .NET's path functions now; an embedded NUL still makes them throw.
+        string badDest = h.Dir.PathOf("backup") + "\0bad";
+        string src = h.Dir.Write(@"bad\a.bin", TestDir.RandomBytes(100, 1));
+        long badId;
+        using (var journal = Journal.Open(h.JournalPath))
+        {
+            badId = journal.CreateJob(null, "bad", h.Dir.PathOf("bad"), badDest);
+            journal.AddEntry(badId, src, badDest + @"\a.bin", 100, ConflictAction.Create, null);
+            Assert.Equal(badDest, journal.GetJob(badId).DestRoot); // the journal keeps the NUL
+        }
+        var good = Plan(h, "card", "backup");
+        h.Runner.Start();
+
+        h.Runner.Enqueue(good, OverwritePolicy.Replace, verify: true);
+        var paused = h.WaitFor(s => s.Id == badId && s.State == JobState.Paused);
+        h.WaitFor(s => s.Name == "card" && s.State == JobState.Done);
+
+        Assert.StartsWith("Squeue couldn't read this job's drives: ", paused.LastError);
+    }
 }

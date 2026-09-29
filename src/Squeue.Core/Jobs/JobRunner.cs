@@ -166,14 +166,27 @@ public sealed class JobRunner : IJobQueue
         foreach (var job in journal.Jobs())
         {
             if (job.State != JobState.Queued || _workers.ContainsKey(job.Id)) continue;
-            var r = ResourcesOf(job, journal.EntriesOf(job.Id), disksOf);
-            // A job with only copies left to verify needs just its destination; the card may be gone by now.
-            if ((r.MissingRoot
-                 ?? (r.VerifyOnly
-                     ? DriveProblems.MissingDestination(job, _options.DriveConnected)
-                     : DriveProblems.MissingVolume(job, _options.DriveConnected))) is { } missing)
+            JobResources r;
+            string? missing;
+            try
             {
-                PauseWithReason(job.Id, DriveProblems.NotConnected(missing));
+                r = ResourcesOf(job, journal.EntriesOf(job.Id), disksOf);
+                // A job with only copies left to verify needs just its destination; the card may be gone by now.
+                missing = r.MissingRoot
+                    ?? (r.VerifyOnly
+                        ? DriveProblems.MissingDestination(job, _options.DriveConnected)
+                        : DriveProblems.MissingVolume(job, _options.DriveConnected));
+            }
+            catch (Exception ex)
+            {
+                // One job with a bad path (or a busy journal) must not stop the others from being scheduled.
+                Trace.TraceError($"Couldn't work out the drives of job {job.Id}: {ex}");
+                PauseSafely(job.Id, CouldNotRead(ex));
+                continue;
+            }
+            if (missing is not null)
+            {
+                PauseSafely(job.Id, DriveProblems.NotConnected(missing));
                 continue;
             }
             queue.Add(new SchedulerJob(job.Id, r.Disks));
@@ -186,8 +199,16 @@ public sealed class JobRunner : IJobQueue
             foreach (string disk in worker.Disks) busy[disk] = worker.JobId;
         }
 
-        var result = Scheduler.Pass(queue, busy, job => CapacityProblem(resources[job.Id]));
-        foreach (var (jobId, problem) in result.NoSpace) PauseWithReason(jobId, problem);
+        var result = Scheduler.Pass(queue, busy, job =>
+        {
+            try { return CapacityProblem(resources[job.Id]); }
+            catch (Exception ex)
+            {
+                Trace.TraceError($"Couldn't check the free space for job {job.Id}: {ex}");
+                return CouldNotRead(ex);
+            }
+        });
+        foreach (var (jobId, problem) in result.NoSpace) PauseSafely(jobId, problem);
         foreach (long jobId in result.Start) StartWorker(jobId, resources[jobId]);
         foreach (var (jobId, wait) in result.Waiting)
         {
@@ -374,6 +395,15 @@ public sealed class JobRunner : IJobQueue
             return;
         }
         Publish(SnapshotOf(jobId));
+    }
+
+    private static string CouldNotRead(Exception ex) => $"Squeue couldn't read this job's drives: {ex.Message}";
+
+    /// Pausing one job failing (a busy journal) must not end the pass for the others.
+    private void PauseSafely(long jobId, string reason)
+    {
+        try { PauseWithReason(jobId, reason); }
+        catch (Exception ex) { Trace.TraceError($"Couldn't pause job {jobId}: {ex}"); }
     }
 
     private void PauseWithReason(long jobId, string reason)
