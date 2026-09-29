@@ -289,4 +289,45 @@ public class MultiDriveTests
         h.WaitFor(s => s.Name == "cardA2" && s.State == JobState.Done);
         Assert.Equal(content, File.ReadAllBytes(h.Dir.PathOf(@"hddA\cardA1\a.bin")));
     }
+
+    [Fact]
+    public void A_job_closed_while_verifying_finishes_verification_after_reopening_without_the_card()
+    {
+        var gates = new GateFileSystem(new WindowsFileSystem());
+        var card = new PullableCard("cardA1");
+        // The old worker is held in the gate when the app closes; don't wait the full default for it.
+        using var h = new RunnerHarness(gates, Topology(), options: card.Options with { ShutdownTimeout = TimeSpan.FromMilliseconds(300) });
+        var plan = PlanTwoFiles(h, "cardA1", "hddA");
+        var holdVerify = gates.HoldVerificationUnder(h.Dir.PathOf("hddA"));
+        long jobId;
+        try
+        {
+            h.Runner.Start();
+            h.Runner.Enqueue(plan, OverwritePolicy.Replace, verify: true);
+            jobId = h.WaitFor(s => s.State == JobState.Verifying).Id;
+
+            // The app closes mid-verification and the card is pulled before it opens again.
+            card.Pull();
+            h.Restart();
+            h.WaitFor(s => s.Id == jobId && s.State == JobState.Verifying);
+            holdVerify.Set();
+
+            var done = h.WaitFor(s => s.Id == jobId && s.State is JobState.Done or JobState.Paused);
+            Assert.Equal(JobState.Done, done.State);
+            Assert.Equal((2, 2, 0), (done.TotalFiles, done.DoneFiles, done.FailedFiles));
+        }
+        finally { holdVerify.Set(); }
+        Assert.DoesNotContain(h.Events, s => s.Id == jobId && s.State is JobState.Running or JobState.Paused);
+
+        h.Runner.Dispose();
+        using var journal = Journal.Open(h.JournalPath);
+        foreach (var row in journal.EntriesOf(jobId))
+        {
+            var entry = journal.GetEntry(row.Id);
+            Assert.Equal(EntryState.Done, entry.State);
+            Assert.NotNull(entry.DestHash);
+            Assert.Equal(entry.SrcHash, entry.DestHash);
+            Assert.Single(journal.AttemptsFor(row.Id)); // verified where it was, never copied again
+        }
+    }
 }
