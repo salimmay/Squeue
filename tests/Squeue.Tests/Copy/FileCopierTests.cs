@@ -12,6 +12,33 @@ public class FileCopierTests
     private readonly WindowsFileSystem _fs = new();
 
     [Fact]
+    public void A_new_file_copy_takes_five_journal_commits()
+    {
+        using var s = new CopyScenario();
+        s.WriteSource([1, 2, 3]);
+        long id = s.AddEntry();
+        long before = s.Journal.CommitCount;
+
+        Assert.Equal(CopyOutcome.Done, new FileCopier(_fs, s.Journal, Options).CopyEntry(id).Outcome);
+
+        Assert.Equal(5, s.Journal.CommitCount - before);
+    }
+
+    [Fact]
+    public void A_verified_replacement_takes_six_journal_commits()
+    {
+        using var s = new CopyScenario();
+        s.WriteSource([1, 2, 3]);
+        s.WriteDest([9]);
+        long id = s.AddEntry(action: ConflictAction.Replace, seenDest: _fs.TryGetIdentity(s.Dest));
+        long before = s.Journal.CommitCount;
+
+        Assert.Equal(CopyOutcome.Done, new FileCopier(_fs, s.Journal, Options).CopyEntry(id).Outcome);
+
+        Assert.Equal(6, s.Journal.CommitCount - before);
+    }
+
+    [Fact]
     public void Copies_a_new_file_and_verifies_it()
     {
         using var s = new CopyScenario();

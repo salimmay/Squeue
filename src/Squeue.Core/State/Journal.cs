@@ -51,6 +51,9 @@ public sealed class Journal : IDisposable
     private readonly SqliteConnection _db;
     private SqliteTransaction? _transaction;
 
+    /// Commits made on this connection; each one is a disk sync (synchronous = FULL). Used by tests and benchmarks.
+    internal long CommitCount { get; private set; }
+
     private Journal(SqliteConnection db) => _db = db;
 
     public static Journal Open(string path)
@@ -76,6 +79,7 @@ public sealed class Journal : IDisposable
         {
             writes();
             _transaction.Commit();
+            CommitCount++;
         }
         finally
         {
@@ -249,6 +253,7 @@ public sealed class Journal : IDisposable
     {
         using var cmd = Command(sql, args);
         cmd.ExecuteNonQuery();
+        if (_transaction is null) CommitCount++;
     }
 
     private long Insert(string sql, params (string Name, object? Value)[] args)

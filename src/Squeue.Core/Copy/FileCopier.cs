@@ -61,7 +61,6 @@ public sealed class FileCopier
 
         using (source)
         {
-            _journal.RecordSourceVersion(entry.Id, source.Identity);
             try { _fs.CreateDirectory(entry.DestDirectory); }
             catch (IOException ex) { return Fail(entry, ex.Message, error: ErrorCode(ex)); }
             catch (UnauthorizedAccessException ex) { return Fail(entry, ex.Message); }
@@ -69,9 +68,15 @@ public sealed class FileCopier
             string tempName = TempNames.New();
             string tempPath = Path.Combine(entry.DestDirectory, tempName);
             UInt128? replaces = entry.Action == ConflictAction.Replace ? entry.SeenDest?.FileId : null;
-            long attemptId = _journal.BeginAttempt(entry.Id, tempName, replaces); // intent is durable before the file exists
-            _journal.ClearHashes(entry.Id); // hashes from an earlier attempt must never satisfy this one
-            _journal.SetEntryState(entry.Id, EntryState.Active);
+            long attemptId = 0;
+            // One commit for everything that must be durable before the temp file exists.
+            _journal.Atomically(() =>
+            {
+                _journal.RecordSourceVersion(entry.Id, source.Identity);
+                attemptId = _journal.BeginAttempt(entry.Id, tempName, replaces);
+                _journal.ClearHashes(entry.Id); // hashes from an earlier attempt must never satisfy this one
+                _journal.SetEntryState(entry.Id, EntryState.Active);
+            });
 
             ITempFile temp;
             try { temp = _fs.CreateTemp(tempPath); }
@@ -88,8 +93,11 @@ public sealed class FileCopier
                 try
                 {
                     string? srcHash = WriteTemp(source, temp, entry.HashAlgorithm, progress, cancellationToken);
-                    _journal.SetHashes(entry.Id, srcHash, null);
-                    _journal.SetPhase(attemptId, AttemptPhase.Written);
+                    _journal.Atomically(() =>
+                    {
+                        _journal.SetHashes(entry.Id, srcHash, null);
+                        _journal.SetPhase(attemptId, AttemptPhase.Written);
+                    });
                     source.Dispose(); // fully read; release it before publishing
 
                     if (entry.Action == ConflictAction.Replace)
@@ -103,8 +111,11 @@ public sealed class FileCopier
                                 Abandon(temp, tempPath, tempId);
                                 return VerificationFailed(entry, attemptId, replaceTarget: null);
                             }
-                            _journal.SetHashes(entry.Id, null, tempHash);
-                            _journal.SetPhase(attemptId, AttemptPhase.VerifiedTemp);
+                            _journal.Atomically(() =>
+                            {
+                                _journal.SetHashes(entry.Id, null, tempHash);
+                                _journal.SetPhase(attemptId, AttemptPhase.VerifiedTemp);
+                            });
                         }
 
                         if (_fs.TryGetIdentity(entry.DestPath) is not { } current
