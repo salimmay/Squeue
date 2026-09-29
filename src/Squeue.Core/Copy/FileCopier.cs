@@ -128,13 +128,18 @@ public sealed class FileCopier
             string destHash = HashUnbuffered(entry.DestPath, entry.HashAlgorithm!);
             if (destHash != entry.SrcHash)
             {
-                _journal.SetPhase(attempt.Id, AttemptPhase.Abandoned);
+                // Record the outcome on the entry first, then close the attempt (same order as the Reconciler),
+                // so a crash in between leaves an open attempt for recovery instead of an orphaned copy.
                 var published = _fs.TryGetIdentity(entry.DestPath);
+                CopyResult failed;
                 if (published is null)
-                    return Fail(entry, "The copied file disappeared before it could be verified. The source was kept.");
-                if (published.Value.FileId != attempt.PublishedFileId)
-                    return Fail(entry, "The destination changed after it was copied. The source was kept.");
-                return VerificationFailed(entry, replaceTarget: published.Value);
+                    failed = Fail(entry, "The copied file disappeared before it could be verified. The source was kept.");
+                else if (published.Value.FileId != attempt.PublishedFileId)
+                    failed = Fail(entry, "The destination changed after it was copied. The source was kept.");
+                else
+                    failed = VerificationFailed(entry, replaceTarget: published.Value);
+                _journal.SetPhase(attempt.Id, AttemptPhase.Abandoned);
+                return failed;
             }
             _journal.SetHashes(entry.Id, null, destHash);
             _journal.SetPhase(attempt.Id, AttemptPhase.Verified);
