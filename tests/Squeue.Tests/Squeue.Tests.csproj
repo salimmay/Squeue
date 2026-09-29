@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Squeue.Core\Squeue.Core.csproj" />
+    <ProjectReference Include="..\..\src\Squeue.ViewModels\Squeue.ViewModels.csproj" />
   </ItemGroup>
 
 </Project>

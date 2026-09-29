@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/Squeue.Core/Squeue.Core.csproj" />
+    <Project Path="src/Squeue.ViewModels/Squeue.ViewModels.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Squeue.Tests/Squeue.Tests.csproj" />
