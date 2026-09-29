@@ -13,6 +13,7 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly Func<DateTime> _now;
     private readonly Dictionary<long, JobCardViewModel> _cards = [];
     private readonly Dictionary<long, JobSnapshot> _latest = [];
+    private readonly HashSet<long> _dismissed = []; // cards the user closed; later snapshots don't bring them back
 
     /// <param name="post">Runs an action on the UI thread; the queue raises events on its own thread.</param>
     public MainViewModel(IJobQueue queue, IDriveSource drives, Action<Action> post, Func<DateTime>? now = null)
@@ -40,11 +41,11 @@ public sealed partial class MainViewModel : ObservableObject
     public void Apply(JobSnapshot snapshot)
     {
         _latest[snapshot.Id] = snapshot;
-        if (IsActive(snapshot))
+        if (NeedsCard(snapshot) && !_dismissed.Contains(snapshot.Id))
         {
             if (!_cards.TryGetValue(snapshot.Id, out var card))
             {
-                card = new JobCardViewModel(snapshot.Id, _queue);
+                card = new JobCardViewModel(snapshot.Id, _queue, Dismiss);
                 _cards[snapshot.Id] = card;
                 Jobs.Add(card);
             }
@@ -56,6 +57,12 @@ public sealed partial class MainViewModel : ObservableObject
         }
         UpdateSummary();
         UpdateBusyDrives();
+    }
+
+    private void Dismiss(JobCardViewModel card)
+    {
+        _dismissed.Add(card.Id);
+        if (_cards.Remove(card.Id)) Jobs.Remove(card);
     }
 
     public void ProposePlan(JobPlan plan) => PendingPlan = new PlanViewModel(plan, StartPlan, _ => PendingPlan = null);
@@ -84,7 +91,7 @@ public sealed partial class MainViewModel : ObservableObject
             ? "Nothing to copy. Drop files or folders here."
             : eta.Length > 0 ? $"{Format.Bytes(left)} left · {eta}" : $"{Format.Bytes(left)} left";
 
-        int doneToday = _latest.Values.Count(s => s.State == JobState.Done && s.CreatedAtUtc.ToLocalTime().Date == _now().Date);
+        int doneToday = _latest.Values.Count(s => s.State == JobState.Done && s.FailedFiles == 0 && s.CreatedAtUtc.ToLocalTime().Date == _now().Date);
         DoneToday = doneToday == 0 ? "" : $"{doneToday} done today";
     }
 
@@ -99,4 +106,8 @@ public sealed partial class MainViewModel : ObservableObject
     }
 
     private static bool IsActive(JobSnapshot s) => s.State is JobState.Queued or JobState.Running or JobState.Paused;
+
+    /// Unfinished jobs, jobs that finished with failures, and cancelled jobs stay visible until dismissed.
+    private static bool NeedsCard(JobSnapshot s) =>
+        IsActive(s) || s.State == JobState.Cancelled || (s.State == JobState.Done && s.FailedFiles > 0);
 }

@@ -5,7 +5,8 @@ using Squeue.Core.State;
 
 namespace Squeue.ViewModels;
 
-public sealed partial class JobCardViewModel(long id, IJobQueue queue) : ObservableObject
+/// <param name="dismiss">Removes this card from the queue window; called by DismissCommand.</param>
+public sealed partial class JobCardViewModel(long id, IJobQueue queue, Action<JobCardViewModel> dismiss) : ObservableObject
 {
     public long Id { get; } = id;
 
@@ -19,6 +20,15 @@ public sealed partial class JobCardViewModel(long id, IJobQueue queue) : Observa
     [ObservableProperty] private bool _isRunning;
     [ObservableProperty] private bool _canPause;
     [ObservableProperty] private bool _canResume;
+    [ObservableProperty] private bool _canCancel;
+    [ObservableProperty] private bool _canDismiss;
+
+    /// Why the job is paused, or the last failure of a job that finished with failures.
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasDetail))]
+    private string _detail = "";
+
+    public bool HasDetail => Detail.Length > 0;
 
     public void Update(JobSnapshot s)
     {
@@ -30,7 +40,10 @@ public sealed partial class JobCardViewModel(long id, IJobQueue queue) : Observa
         IsRunning = s.State == JobState.Running;
         CanPause = s.State is JobState.Running or JobState.Queued;
         CanResume = s.State == JobState.Paused;
+        CanCancel = s.State is JobState.Queued or JobState.Running or JobState.Paused;
+        CanDismiss = s.State is JobState.Done or JobState.Cancelled;
         Status = StatusText(s);
+        Detail = (s.State == JobState.Done && s.FailedFiles > 0) || s.State == JobState.Paused ? s.LastError ?? "" : "";
         TimeLeft = s.State == JobState.Running
             ? Format.TimeLeftFor(s.TotalBytes - s.DoneBytes, s.BytesPerSecond)
             : "";
@@ -53,4 +66,7 @@ public sealed partial class JobCardViewModel(long id, IJobQueue queue) : Observa
 
     [RelayCommand]
     private void Cancel() => queue.Cancel(Id);
+
+    [RelayCommand]
+    private void Dismiss() => dismiss(this);
 }

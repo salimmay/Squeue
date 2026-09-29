@@ -58,7 +58,9 @@
                             <Button Style="{StaticResource IconButton}" Content="&#xE768;" ToolTip="Resume" AutomationProperties.Name="Resume"
                                     Command="{Binding ResumeCommand}" Visibility="{Binding CanResume, Converter={StaticResource Visible}}" />
                             <Button Style="{StaticResource IconButton}" Content="&#xE711;" ToolTip="Cancel" AutomationProperties.Name="Cancel"
-                                    Command="{Binding CancelCommand}" />
+                                    Command="{Binding CancelCommand}" Visibility="{Binding CanCancel, Converter={StaticResource Visible}}" />
+                            <Button Style="{StaticResource IconButton}" Content="&#xE711;" ToolTip="Dismiss" AutomationProperties.Name="Dismiss"
+                                    Command="{Binding DismissCommand}" Visibility="{Binding CanDismiss, Converter={StaticResource Visible}}" />
                         </StackPanel>
                     </Grid>
                     <ProgressBar Maximum="1" Value="{Binding Fraction, Mode=OneWay}" Height="3" Margin="0,12,0,0" />
@@ -67,6 +69,9 @@
                         <TextBlock Text="{Binding TimeLeft}" FontSize="11" HorizontalAlignment="Right"
                                    Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
                     </Grid>
+                    <TextBlock Text="{Binding Detail}" FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0"
+                               Foreground="{DynamicResource SystemFillColorCautionBrush}"
+                               Visibility="{Binding HasDetail, Converter={StaticResource Visible}}" />
                 </StackPanel>
             </Border>
             <DataTemplate.Triggers>

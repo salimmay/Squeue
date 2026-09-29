@@ -53,6 +53,59 @@ public class ViewModelTests
     }
 
     [Fact]
+    public void A_job_that_finished_with_failures_keeps_its_card_until_dismissed()
+    {
+        var queue = new FakeJobQueue();
+        var main = NewMain(queue);
+        var failed = FakeJobQueue.Snapshot(id: 3, state: JobState.Done, done: 100 * 1048576, failed: 2, created: Now.ToUniversalTime())
+            with { LastError = "boom" };
+
+        queue.Raise(failed);
+
+        var card = Assert.Single(main.Jobs);
+        Assert.Equal(("Done · 2 failed", "boom", true, true), (card.Status, card.Detail, card.HasDetail, card.CanDismiss));
+        Assert.False(card.CanCancel);
+        Assert.Equal("", main.DoneToday);
+
+        card.DismissCommand.Execute(null);
+        Assert.Empty(main.Jobs);
+
+        queue.Raise(failed);
+        Assert.Empty(main.Jobs);
+        Assert.Equal("", main.DoneToday);
+    }
+
+    [Fact]
+    public void A_cancelled_job_keeps_its_card_until_dismissed()
+    {
+        var queue = new FakeJobQueue();
+        var main = NewMain(queue);
+        queue.Raise(FakeJobQueue.Snapshot(id: 4));
+
+        queue.Raise(FakeJobQueue.Snapshot(id: 4, state: JobState.Cancelled));
+
+        var card = Assert.Single(main.Jobs);
+        Assert.Equal(("Cancelled", "", true, false), (card.Status, card.Detail, card.CanDismiss, card.CanCancel));
+        card.DismissCommand.Execute(null);
+        Assert.Empty(main.Jobs);
+        queue.Raise(FakeJobQueue.Snapshot(id: 4, state: JobState.Cancelled));
+        Assert.Empty(main.Jobs);
+    }
+
+    [Fact]
+    public void A_paused_job_shows_its_reason_as_detail_and_can_be_cancelled()
+    {
+        var queue = new FakeJobQueue();
+        var main = NewMain(queue);
+
+        queue.Raise(FakeJobQueue.Snapshot(state: JobState.Paused) with { LastError = @"F:\ isn't connected. Reconnect it and resume." });
+
+        var card = main.Jobs[0];
+        Assert.Equal((true, true, false), (card.HasDetail, card.CanCancel, card.CanDismiss));
+        Assert.Equal(@"F:\ isn't connected. Reconnect it and resume.", card.Detail);
+    }
+
+    [Fact]
     public void Card_buttons_go_to_the_queue()
     {
         var queue = new FakeJobQueue();
