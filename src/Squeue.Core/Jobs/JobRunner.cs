@@ -6,28 +6,40 @@ using Squeue.Core.State;
 
 namespace Squeue.Core.Jobs;
 
-/// Runs queued jobs one at a time on its own thread, which is the only thread that touches the journal.
-/// Commands can be called from any thread; they take effect between files and during a file's progress reports,
-/// and Pause/Cancel also stop the current file.
+/// The coordinator. One coordinator thread owns the queue, the disks each running job holds and every scheduling
+/// decision; each running job has its own worker thread and journal connection. A job starts only when all the
+/// disks its next phase needs are free, so jobs on different disks run in parallel and jobs sharing a disk run in
+/// queue order. A copy job moving on to verification frees its source disks. Commands can be called from any
+/// thread; they take effect on the coordinator thread, and a running job's disks are released only after its
+/// worker has stopped.
 public sealed class JobRunner : IJobQueue
 {
     private readonly IFileSystem _fs;
     private readonly string _journalPath;
     private readonly JobRunnerOptions _options;
+    private readonly IDiskTopology _topology;
+    private readonly IVolumeSpace _space;
     private readonly BlockingCollection<Action> _commands = new();
     private readonly object _gate = new();
-    private long _runningJobId;
-    private CancellationTokenSource? _runningStop;
+    private readonly Dictionary<long, CancellationTokenSource> _stops = []; // under _gate
     private Thread? _thread;
-    private Journal? _journal;
     private bool _disposed;
-    private readonly Dictionary<long, string> _jobErrors = new(); // runner thread only
 
-    public JobRunner(IFileSystem fs, string journalPath, JobRunnerOptions? options = null)
+    // Coordinator thread only.
+    private Journal? _journal;
+    private readonly Dictionary<long, Worker> _workers = [];
+    private readonly Dictionary<long, string> _jobErrors = [];
+    private readonly Dictionary<long, string> _waiting = [];
+    private long _nextRunId;
+
+    public JobRunner(IFileSystem fs, string journalPath, JobRunnerOptions? options = null,
+        IDiskTopology? topology = null, IVolumeSpace? space = null)
     {
         _fs = fs;
         _journalPath = journalPath;
         _options = options ?? new JobRunnerOptions();
+        _topology = topology ?? new WindowsDiskTopology();
+        _space = space ?? new WindowsVolumeSpace();
     }
 
     public event Action<JobSnapshot>? JobChanged;
@@ -38,7 +50,7 @@ public sealed class JobRunner : IJobQueue
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (_thread is not null) throw new InvalidOperationException("The runner is already started.");
-            _thread = new Thread(Run) { IsBackground = true, Name = "Squeue job runner" };
+            _thread = new Thread(Run) { IsBackground = true, Name = "Squeue coordinator" };
             _thread.Start();
         }
     }
@@ -46,10 +58,14 @@ public sealed class JobRunner : IJobQueue
     public void Enqueue(JobPlan plan, OverwritePolicy policy, bool verify) =>
         Post(() => AddJob(plan, policy, verify));
 
+    // Pause and Cancel post the state change before stopping the worker, so it is always handled before the worker's
+    // exit report: otherwise the exit could re-queue the job and a pass restart it before the pause arrives.
+    // Only the run current when the command was given is stopped, never one started after it.
     public void Pause(long jobId)
     {
-        StopIfRunning(jobId);
-        Post(() => ChangeState(jobId, JobState.Paused, JobState.Queued, JobState.Running));
+        var run = CurrentRun(jobId);
+        Post(() => ChangeState(jobId, JobState.Paused, JobState.Queued, JobState.Running, JobState.Verifying));
+        StopIfRunning(jobId, run);
     }
 
     public void Resume(long jobId) =>
@@ -57,12 +73,13 @@ public sealed class JobRunner : IJobQueue
 
     public void Cancel(long jobId)
     {
-        StopIfRunning(jobId);
-        Post(() => ChangeState(jobId, JobState.Cancelled, JobState.Queued, JobState.Running, JobState.Paused));
+        var run = CurrentRun(jobId);
+        Post(() => ChangeState(jobId, JobState.Cancelled, JobState.Queued, JobState.Running, JobState.Verifying, JobState.Paused));
+        StopIfRunning(jobId, run);
     }
 
-    /// Stops the current file (cleaned up, or left to finish next launch) and ends the runner thread,
-    /// waiting at most ShutdownTimeout for it.
+    /// Stops every running job (its current file is cleaned up or left to finish next launch) and ends the
+    /// coordinator, waiting at most ShutdownTimeout.
     public void Dispose()
     {
         Thread? thread;
@@ -70,13 +87,12 @@ public sealed class JobRunner : IJobQueue
         {
             if (_disposed) return;
             _disposed = true;
-            _runningStop?.Cancel();
+            foreach (var stop in _stops.Values) stop.Cancel();
             thread = _thread;
         }
         _commands.CompleteAdding();
-        // A drive that stopped responding can block a read for a long time; never let that hang closing the app.
         if (thread is not null && !thread.Join(_options.ShutdownTimeout))
-            Trace.TraceWarning("The job runner did not stop in time; it is left to end with the process.");
+            Trace.TraceWarning("The job coordinator did not stop in time; it is left to end with the process.");
     }
 
     /// A command sent during or after shutdown is dropped.
@@ -89,7 +105,7 @@ public sealed class JobRunner : IJobQueue
     private static void RunCommand(Action command)
     {
         try { command(); }
-        catch (Exception ex) { Trace.TraceError($"Job runner command failed: {ex}"); }
+        catch (Exception ex) { Trace.TraceError($"Job coordinator command failed: {ex}"); }
     }
 
     private void Run()
@@ -102,8 +118,8 @@ public sealed class JobRunner : IJobQueue
             catch (Exception ex) { Trace.TraceError($"Startup recovery failed: {ex}"); }
             foreach (var job in journal.Jobs())
             {
-                // A job that was running when the app stopped goes back in the queue.
-                if (job.State == JobState.Running) journal.SetJobState(job.Id, JobState.Queued);
+                // A job that was running or verifying when the app stopped goes back in the queue.
+                if (job.State is JobState.Running or JobState.Verifying) journal.SetJobState(job.Id, JobState.Queued);
             }
             // Unfinished jobs, and today's finished ones; older history isn't shown, so launch time stays flat.
             var today = DateTime.Now.Date;
@@ -113,203 +129,279 @@ public sealed class JobRunner : IJobQueue
                 if (!finished || DateTime.FromFileTimeUtc(job.CreatedAt).ToLocalTime().Date == today) Publish(SnapshotOf(job.Id));
             }
 
-            var copier = new FileCopier(_fs, journal, _options.Copy);
-            while (!_commands.IsAddingCompleted)
+            SchedulePassSafely();
+            while (true)
             {
-                DrainCommands();
-                var next = NextRunnableJob();
-                if (next is not null)
-                {
-                    RunJob(copier, next.Id);
-                    continue;
-                }
                 Action command;
-                try { command = _commands.Take(); } // nothing queued: wait for a command
-                catch (InvalidOperationException) { break; } // Dispose was called while waiting
+                try { command = _commands.Take(); }
+                catch (InvalidOperationException) { break; } // Dispose was called
                 RunCommand(command);
+                while (_commands.TryTake(out var more)) RunCommand(more);
+                SchedulePassSafely();
             }
         }
         catch (Exception ex)
         {
-            Trace.TraceError($"The job runner stopped after an unexpected error: {ex}");
-        }
-    }
-
-    private void RunJob(FileCopier copier, long jobId)
-    {
-        var journal = _journal!;
-        // Attempts that recovery had to leave alone (their drive was missing) are settled now, before copying resumes.
-        if (journal.OpenAttempts().Count > 0)
-        {
-            try { new Reconciler(_fs, journal).Run(); }
-            catch (Exception ex) { Trace.TraceError($"Recovery before resuming did not complete: {ex}"); }
-        }
-        journal.SetJobState(jobId, JobState.Running);
-        var job = journal.GetJob(jobId);
-        var entries = journal.EntriesOf(jobId);
-        var counters = JobCounters.From(entries);
-        var stop = new CancellationTokenSource();
-        lock (_gate)
-        {
-            _runningJobId = jobId;
-            _runningStop = stop;
-            if (_disposed) stop.Cancel();
-        }
-
-        var clock = Stopwatch.StartNew();
-        var sincePublish = Stopwatch.StartNew();
-        long copiedThisRun = 0;
-        long currentBytes = 0;
-        string? currentFile = null;
-
-        void PublishRunning(bool force)
-        {
-            if (!force && sincePublish.Elapsed < _options.ProgressInterval) return;
-            sincePublish.Restart();
-            double seconds = clock.Elapsed.TotalSeconds;
-            double speed = seconds > 0.2 ? (copiedThisRun + currentBytes) / seconds : 0;
-            Publish(Snapshot(job, counters, counters.FinishedBytes + currentBytes, currentFile, speed));
-        }
-
-        var progress = new InlineProgress(p =>
-        {
-            // Run waiting commands now so a new job shows up during a long file. This is the runner thread, and
-            // FileCopier never reports progress inside Journal.Atomically, so the commands' journal writes are safe here.
-            DrainCommands();
-            // Verification re-reads the file; only the copy stage moves the bar.
-            if (p.Stage == CopyStage.Copying) currentBytes = p.BytesDone;
-            PublishRunning(force: false);
-        });
-
-        try
-        {
-            PublishRunning(force: true);
-            foreach (var entry in entries)
-            {
-                if (entry.State is EntryState.Done or EntryState.Failed) continue;
-                DrainCommands();
-                if (stop.IsCancellationRequested || _commands.IsAddingCompleted || journal.GetJob(jobId).State != JobState.Running) break;
-
-                currentFile = Path.GetFileName(entry.SrcPath);
-                currentBytes = 0;
-                var result = CopyOne(copier, entry.Id, progress, stop.Token, out string? stoppedReason);
-                if (result.Outcome == CopyOutcome.Cancelled) break;
-                if (stoppedReason is not null)
-                {
-                    // A drive or the journal misbehaved: this is not the file's fault. Clean up and pause the job.
-                    try { new Reconciler(_fs, journal).Run(); }
-                    catch (Exception ex) { Trace.TraceError($"Recovery after a failure did not complete: {ex}"); }
-                    _jobErrors[jobId] = MissingVolume(job) is { } root ? NotConnected(root) : stoppedReason;
-                    journal.SetJobState(jobId, JobState.Paused);
-                    Publish(SnapshotOf(jobId));
-                    break;
-                }
-                if (result.Outcome == CopyOutcome.Failed && (IsDeviceTrouble(result.Win32Error) || MissingVolume(job) is not null))
-                {
-                    // The drive failed, not the file: put the file back in line (its attempt is already closed) and pause.
-                    journal.SetEntryState(entry.Id, EntryState.Pending);
-                    _jobErrors[jobId] = DeviceReason(job, result.Win32Error);
-                    journal.SetJobState(jobId, JobState.Paused);
-                    Publish(SnapshotOf(jobId));
-                    break;
-                }
-
-                currentBytes = 0;
-                if (result.Outcome == CopyOutcome.Done)
-                {
-                    counters.Done(entry.PlannedSize);
-                    copiedThisRun += entry.PlannedSize;
-                }
-                else
-                {
-                    counters.Failed(entry.PlannedSize, result.Message);
-                }
-                PublishRunning(force: false);
-            }
+            Trace.TraceError($"The job coordinator stopped after an unexpected error: {ex}");
         }
         finally
         {
-            lock (_gate)
+            StopWorkers();
+        }
+    }
+
+    private void SchedulePassSafely()
+    {
+        try { SchedulePass(); }
+        catch (Exception ex) { Trace.TraceError($"Scheduling failed: {ex}"); }
+    }
+
+    private void SchedulePass()
+    {
+        if (_commands.IsAddingCompleted) return;
+        var journal = _journal!;
+        var queue = new List<SchedulerJob>();
+        var resources = new Dictionary<long, JobResources>();
+        var disksOf = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var job in journal.Jobs())
+        {
+            if (job.State != JobState.Queued || _workers.ContainsKey(job.Id)) continue;
+            var r = ResourcesOf(job, journal.EntriesOf(job.Id), disksOf);
+            if (r.MissingRoot is { } missing)
             {
-                _runningJobId = 0;
-                _runningStop = null;
+                PauseWithReason(job.Id, DriveProblems.NotConnected(missing));
+                continue;
             }
-            stop.Dispose();
+            queue.Add(new SchedulerJob(job.Id, r.Disks));
+            resources[job.Id] = r;
         }
 
-        DrainCommands();
-        if (journal.GetJob(jobId).State == JobState.Running)
+        var busy = new Dictionary<string, long>(StringComparer.Ordinal);
+        foreach (var worker in _workers.Values)
         {
-            bool finished = journal.EntriesOf(jobId).All(e => e.State is EntryState.Done or EntryState.Failed);
-            journal.SetJobState(jobId, finished ? JobState.Done : JobState.Queued);
+            foreach (string disk in worker.Disks) busy[disk] = worker.JobId;
+        }
+
+        var result = Scheduler.Pass(queue, busy, job => CapacityProblem(resources[job.Id]));
+        foreach (var (jobId, problem) in result.NoSpace) PauseWithReason(jobId, problem);
+        foreach (long jobId in result.Start) StartWorker(jobId, resources[jobId]);
+        foreach (var (jobId, wait) in result.Waiting)
+        {
+            string text = WaitingText(wait);
+            if (_waiting.TryGetValue(jobId, out var old) && old == text) continue;
+            _waiting[jobId] = text;
+            Publish(SnapshotOf(jobId));
+        }
+    }
+
+    private sealed record JobResources(
+        IReadOnlySet<string> Disks, IReadOnlySet<string> DestDisks, string? MissingRoot,
+        string DestRoot, IReadOnlyList<long> PendingSizes, bool VerifyOnly);
+
+    /// The disks the job's next phase needs: the destination's, plus the source's while files remain to copy.
+    /// A job with only published copies left to verify needs just the destination.
+    private JobResources ResourcesOf(JobRow job, IReadOnlyList<EntryRow> entries, Dictionary<string, IReadOnlyList<string>> disksOf)
+    {
+        string dest = job.DestRoot ?? "";
+        var pending = entries.Where(e => e.State == EntryState.Pending).ToList();
+        bool verifyOnly = pending.Count == 0 && entries.Any(e => e.State == EntryState.Active);
+
+        IReadOnlyList<string> Resolve(string path)
+        {
+            if (!disksOf.TryGetValue(path, out var disks)) disksOf[path] = disks = _topology.DisksOf(path);
+            return disks;
+        }
+
+        var destDisks = new HashSet<string>(StringComparer.Ordinal);
+        if (dest.Length > 0)
+        {
+            var d = Resolve(dest);
+            if (d.Count == 0) return Missing(Path.GetPathRoot(dest) ?? dest);
+            destDisks.UnionWith(d);
+        }
+        var all = new HashSet<string>(destDisks, StringComparer.Ordinal);
+        foreach (string folder in pending.Select(e => Path.GetDirectoryName(e.SrcPath) ?? e.SrcPath).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var d = Resolve(folder);
+            if (d.Count == 0) return Missing(Path.GetPathRoot(folder) ?? folder);
+            all.UnionWith(d);
+        }
+        return new JobResources(all, destDisks, null, dest, pending.Select(e => e.PlannedSize).ToList(), verifyOnly);
+
+        JobResources Missing(string root) => new(new HashSet<string>(), new HashSet<string>(), root, dest, [], false);
+    }
+
+    private string? CapacityProblem(JobResources r)
+    {
+        if (r.PendingSizes.Count == 0 || r.DestRoot.Length == 0) return null;
+        if (_space.Query(r.DestRoot) is not { } space) return DriveProblems.NotConnected(Path.GetPathRoot(r.DestRoot) ?? r.DestRoot);
+        long need = Capacity.Need(r.PendingSizes, space.ClusterSize);
+        long reserved = 0;
+        foreach (var worker in _workers.Values)
+        {
+            // Space a running job has already allocated is gone from free space; count only what it still has to write.
+            if (!string.Equals(worker.DestVolume, space.Root, StringComparison.OrdinalIgnoreCase)) continue;
+            reserved += Capacity.Need(
+                _journal!.EntriesOf(worker.JobId).Where(e => e.State == EntryState.Pending).Select(e => e.PlannedSize),
+                space.ClusterSize);
+        }
+        return Capacity.Problem(space, need, reserved);
+    }
+
+    private string WaitingText(Wait wait)
+    {
+        string other = _journal!.GetJob(wait.OtherJobId).Name ?? "another job";
+        return wait.Kind == WaitKind.DiskInUse
+            ? $"“{other}” is using the same drive"
+            : $"“{other}” is ahead of it on the same drive";
+    }
+
+    private sealed class Worker(long jobId, long runId, IReadOnlySet<string> disks, IReadOnlySet<string> destDisks,
+        CancellationTokenSource stop, string? destVolume)
+    {
+        public long JobId { get; } = jobId;
+        public long RunId { get; } = runId;
+        public IReadOnlySet<string> Disks { get; set; } = disks;
+        public IReadOnlySet<string> DestDisks { get; } = destDisks;
+        public CancellationTokenSource Stop { get; } = stop;
+        public string? DestVolume { get; } = destVolume;
+        public Thread? Thread { get; set; }
+    }
+
+    private void StartWorker(long jobId, JobResources r)
+    {
+        var journal = _journal!;
+        long runId = ++_nextRunId;
+        var stop = new CancellationTokenSource();
+        lock (_gate)
+        {
+            if (_disposed) stop.Cancel();
+            _stops[jobId] = stop;
+        }
+        string? destVolume = r.DestRoot.Length > 0 ? _space.Query(r.DestRoot)?.Root : null;
+        var worker = new Worker(jobId, runId, r.Disks, r.DestDisks, stop, destVolume);
+        _workers[jobId] = worker;
+        _jobErrors.Remove(jobId);
+        _waiting.Remove(jobId);
+        journal.SetJobState(jobId, r.VerifyOnly ? JobState.Verifying : JobState.Running);
+        Publish(SnapshotOf(jobId));
+        worker.Thread = new Thread(() => RunWorker(jobId, runId, stop.Token)) { IsBackground = true, Name = $"Squeue job {jobId}" };
+        worker.Thread.Start();
+    }
+
+    /// Worker thread.
+    private void RunWorker(long jobId, long runId, CancellationToken stop)
+    {
+        string? pauseReason;
+        try
+        {
+            using var journal = Journal.Open(_journalPath);
+            pauseReason = new JobWorker(_fs, journal, _options, jobId, Publish,
+                () => Post(() => OnVerifying(jobId, runId)), stop).Run();
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"Job {jobId} stopped after an unexpected error: {ex}");
+            pauseReason = stop.IsCancellationRequested ? null : ex.Message;
+        }
+        Post(() => OnWorkerExited(jobId, runId, pauseReason));
+    }
+
+    /// The worker finished copying and is verifying: only the destination's disks stay held.
+    private void OnVerifying(long jobId, long runId)
+    {
+        if (!_workers.TryGetValue(jobId, out var worker) || worker.RunId != runId) return;
+        worker.Disks = worker.DestDisks;
+        if (_journal!.GetJob(jobId).State == JobState.Running) _journal.SetJobState(jobId, JobState.Verifying);
+    }
+
+    /// The worker has stopped: release its disks and settle the job's state.
+    private void OnWorkerExited(long jobId, long runId, string? pauseReason)
+    {
+        if (!_workers.TryGetValue(jobId, out var worker) || worker.RunId != runId) return;
+        _workers.Remove(jobId);
+        lock (_gate)
+        {
+            if (_stops.TryGetValue(jobId, out var stop) && stop == worker.Stop) _stops.Remove(jobId);
+        }
+        worker.Stop.Dispose();
+
+        var journal = _journal!;
+        if (journal.GetJob(jobId).State is JobState.Running or JobState.Verifying)
+        {
+            if (pauseReason is not null)
+            {
+                _jobErrors[jobId] = pauseReason;
+                journal.SetJobState(jobId, JobState.Paused);
+            }
+            else
+            {
+                // Files whose verification failed are Pending again: the job re-queues for a retry pass.
+                bool finished = journal.EntriesOf(jobId).All(e => e.State is EntryState.Done or EntryState.Failed);
+                journal.SetJobState(jobId, finished ? JobState.Done : JobState.Queued);
+            }
         }
         Publish(SnapshotOf(jobId));
     }
 
-    /// The first queued job whose drives are connected. Queued jobs with a missing drive are paused, not failed.
-    private JobRow? NextRunnableJob()
+    private void StopWorkers()
     {
-        var journal = _journal!;
-        foreach (var job in journal.Jobs().Where(j => j.State == JobState.Queued))
+        var clock = Stopwatch.StartNew();
+        foreach (var worker in _workers.Values)
         {
-            if (MissingVolume(job) is not { } root) return job;
-            _jobErrors[job.Id] = NotConnected(root);
-            journal.SetJobState(job.Id, JobState.Paused);
-            Publish(SnapshotOf(job.Id));
+            worker.Stop.Cancel();
+            var left = _options.ShutdownTimeout - clock.Elapsed;
+            if (worker.Thread is not null && (left <= TimeSpan.Zero || !worker.Thread.Join(left)))
+                Trace.TraceWarning($"Job {worker.JobId} did not stop in time; it is left to end with the process.");
         }
-        return null;
     }
 
-    /// Not ready, network name gone, device not connected (433, 1167), disk full (112, 39).
-    private static bool IsDeviceTrouble(int code) => code is 21 or 55 or 433 or 1167 or 112 or 39;
-
-    /// The root of the job's source or destination when that drive isn't connected.
-    private static string? MissingVolume(JobRow job)
+    private void ChangeState(long jobId, JobState to, params JobState[] from)
     {
-        foreach (string? path in new[] { job.Source, job.DestRoot })
+        var journal = _journal!;
+        if (!from.Contains(journal.GetJob(jobId).State)) return;
+        journal.SetJobState(jobId, to);
+        if (to == JobState.Queued) _jobErrors.Remove(jobId);
+        _waiting.Remove(jobId);
+        if (_workers.TryGetValue(jobId, out var worker))
         {
-            if (string.IsNullOrEmpty(path)) continue;
-            string? root = Path.GetPathRoot(path);
-            if (!string.IsNullOrEmpty(root) && !Directory.Exists(root)) return root;
+            // Also catches a worker started after the caller's StopIfRunning. Its new state is reported once it has stopped.
+            if (to is JobState.Paused or JobState.Cancelled) worker.Stop.Cancel();
+            return;
         }
-        return null;
+        Publish(SnapshotOf(jobId));
     }
 
-    private static string NotConnected(string root) => $"{root} isn't connected. Reconnect it and resume.";
-
-    private static string DeviceReason(JobRow job, int code) =>
-        MissingVolume(job) is { } root ? NotConnected(root)
-        : code is 112 or 39 ? "The destination drive is full. Free some space and resume."
-        : "A drive stopped responding. Reconnect it and resume.";
-
-    private CopyResult CopyOne(FileCopier copier, long entryId, IProgress<CopyProgress> progress, CancellationToken stop, out string? stoppedReason)
+    private void PauseWithReason(long jobId, string reason)
     {
-        stoppedReason = null;
-        var journal = _journal!;
-        try
-        {
-            var result = copier.CopyEntry(entryId, progress, stop);
-            if (result.Outcome == CopyOutcome.RetryNeeded) result = copier.CopyEntry(entryId, progress, stop);
+        _jobErrors[jobId] = reason;
+        _waiting.Remove(jobId);
+        _journal!.SetJobState(jobId, JobState.Paused);
+        Publish(SnapshotOf(jobId));
+    }
 
-            if (result.Outcome == CopyOutcome.DestinationChanged)
-            {
-                // There is no per-file conflict prompt yet: keep the other file and report this one.
-                const string message = "A file with this name appeared at the destination while copying. It was kept.";
-                journal.SetEntryState(entryId, EntryState.Failed, message);
-                return new CopyResult(CopyOutcome.Failed, message);
-            }
-            if (result.Outcome == CopyOutcome.RetryNeeded)
-            {
-                journal.SetEntryState(entryId, EntryState.Failed, result.Message);
-                return new CopyResult(CopyOutcome.Failed, result.Message);
-            }
-            return result;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+    private CancellationTokenSource? CurrentRun(long jobId)
+    {
+        lock (_gate) return _stops.GetValueOrDefault(jobId);
+    }
+
+    /// A run leaves _stops (under the lock) before its token source is disposed, so a match is never disposed.
+    private void StopIfRunning(long jobId, CancellationTokenSource? run)
+    {
+        if (run is null) return;
+        lock (_gate)
         {
-            stoppedReason = ex.Message;
-            return new CopyResult(CopyOutcome.Failed, ex.Message);
+            if (_stops.TryGetValue(jobId, out var stop) && stop == run) stop.Cancel();
         }
+    }
+
+    private JobSnapshot SnapshotOf(long jobId)
+    {
+        var journal = _journal!;
+        var job = journal.GetJob(jobId);
+        var c = JobCounters.From(journal.EntriesOf(jobId));
+        return Snapshots.Create(job, job.State, c, c.FinishedBytes, c.TotalBytes, null, 0,
+            _jobErrors.TryGetValue(jobId, out var e) ? e : c.LastError, _waiting.GetValueOrDefault(jobId));
     }
 
     private void AddJob(JobPlan plan, OverwritePolicy policy, bool verify)
@@ -340,87 +432,12 @@ public sealed class JobRunner : IJobQueue
 
     private const string DifferentFileKept = "A different file with this name is already there. It was not replaced.";
 
-    private void ChangeState(long jobId, JobState to, params JobState[] from)
-    {
-        var journal = _journal!;
-        if (!from.Contains(journal.GetJob(jobId).State)) return;
-        journal.SetJobState(jobId, to);
-        if (to == JobState.Queued) _jobErrors.Remove(jobId);
-        Publish(SnapshotOf(jobId));
-    }
-
-    private void StopIfRunning(long jobId)
-    {
-        lock (_gate)
-        {
-            if (_runningJobId == jobId) _runningStop?.Cancel();
-        }
-    }
-
-    private void DrainCommands()
-    {
-        while (_commands.TryTake(out var command)) RunCommand(command);
-    }
-
-    private JobSnapshot SnapshotOf(long jobId)
-    {
-        var journal = _journal!;
-        var counters = JobCounters.From(journal.EntriesOf(jobId));
-        return Snapshot(journal.GetJob(jobId), counters, counters.FinishedBytes, null, 0);
-    }
-
-    private JobSnapshot Snapshot(JobRow job, JobCounters c, long doneBytes, string? currentFile, double speed) =>
-        new(job.Id, job.Name ?? "Copy", job.Source ?? "", job.DestRoot ?? "", job.State,
-            c.Total, c.DoneCount, c.FailedCount, c.TotalBytes, doneBytes, currentFile, speed, _jobErrors.TryGetValue(job.Id, out var e) ? e : c.LastError,
-            DateTime.FromFileTimeUtc(job.CreatedAt));
-
     private void Publish(JobSnapshot snapshot)
     {
         foreach (var handler in JobChanged?.GetInvocationList() ?? [])
         {
             try { ((Action<JobSnapshot>)handler)(snapshot); }
             catch (Exception ex) { Trace.TraceError($"A job event subscriber failed: {ex}"); }
-        }
-    }
-
-    private sealed class InlineProgress(Action<CopyProgress> report) : IProgress<CopyProgress>
-    {
-        public void Report(CopyProgress value) => report(value);
-    }
-
-    private sealed class JobCounters
-    {
-        public int Total { get; private set; }
-        public int DoneCount { get; private set; }
-        public int FailedCount { get; private set; }
-        public long TotalBytes { get; private set; }
-        public long FinishedBytes { get; private set; }
-        public string? LastError { get; private set; }
-
-        public static JobCounters From(IReadOnlyList<EntryRow> entries)
-        {
-            var c = new JobCounters();
-            foreach (var e in entries)
-            {
-                c.Total++;
-                c.TotalBytes += e.PlannedSize;
-                if (e.State == EntryState.Done) c.Done(e.PlannedSize);
-                else if (e.State == EntryState.Failed) c.Failed(e.PlannedSize, e.Error);
-            }
-            return c;
-        }
-
-        public void Done(long bytes)
-        {
-            DoneCount++;
-            FinishedBytes += bytes;
-        }
-
-        public void Failed(long bytes, string? error)
-        {
-            FailedCount++;
-            FinishedBytes += bytes;
-            LastError = error;
         }
     }
 }

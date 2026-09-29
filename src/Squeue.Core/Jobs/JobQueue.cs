@@ -7,6 +7,7 @@ namespace Squeue.Core.Jobs;
 public enum OverwritePolicy { Replace, Skip }
 
 /// A job as the UI sees it. DoneBytes counts finished files (done or failed) plus the current file's copied bytes.
+/// While Verifying, TotalBytes and DoneBytes describe the verification pass. WaitingFor says why a queued job hasn't started.
 public sealed record JobSnapshot(
     long Id,
     string Name,
@@ -21,7 +22,8 @@ public sealed record JobSnapshot(
     string? CurrentFile,
     double BytesPerSecond,
     string? LastError,
-    DateTime CreatedAtUtc)
+    DateTime CreatedAtUtc,
+    string? WaitingFor = null)
 {
     public double Fraction => TotalBytes == 0
         ? (State == JobState.Done ? 1 : 0)
@@ -30,7 +32,7 @@ public sealed record JobSnapshot(
 
 public interface IJobQueue : IDisposable
 {
-    /// Raised on the queue's own thread, never the caller's.
+    /// Raised on a background thread (the coordinator's or a job's), never the caller's.
     event Action<JobSnapshot>? JobChanged;
 
     void Start();

@@ -16,9 +16,14 @@ public sealed class RunnerHarness : IDisposable
     private readonly List<JobSnapshot> _events = [];
     private readonly object _lock = new();
 
-    public RunnerHarness(IFileSystem? fs = null)
+    private readonly IDiskTopology? _topology;
+    private readonly IVolumeSpace? _space;
+
+    public RunnerHarness(IFileSystem? fs = null, IDiskTopology? topology = null, IVolumeSpace? space = null)
     {
         Fs = fs ?? new WindowsFileSystem();
+        _topology = topology;
+        _space = space;
         Runner = NewRunner();
     }
 
@@ -74,7 +79,7 @@ public sealed class RunnerHarness : IDisposable
 
     private JobRunner NewRunner()
     {
-        var runner = new JobRunner(Fs, JournalPath, Options);
+        var runner = new JobRunner(Fs, JournalPath, Options, _topology, _space);
         runner.JobChanged += snapshot =>
         {
             lock (_lock)
