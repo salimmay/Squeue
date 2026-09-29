@@ -21,6 +21,6 @@ public static partial class TempNames
     /// Shape only. Ownership is always decided by the journal and the file id, never by the name.
     public static bool HasTempShape(string fileName) => Shape().IsMatch(fileName);
 
-    [GeneratedRegex("^~tq[a-z2-7]{10}\\.tmp$")]
+    [GeneratedRegex("^~tq[a-z2-7]{10}\\.tmp\\z")]
     private static partial Regex Shape();
 }

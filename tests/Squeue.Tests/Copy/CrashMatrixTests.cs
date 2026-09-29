@@ -78,6 +78,8 @@ public class CrashMatrixTests
         var again = new Reconciler(real, s.Journal).Run();
         Assert.Empty(again.Reset);
         Assert.Empty(again.Failed);
+        Assert.Empty(again.Resumed);
+        Assert.Empty(again.Unowned);
     }
 
     public static TheoryData<FsOp, bool> VerifyFailureCrashPoints() => new()
@@ -130,6 +132,8 @@ public class CrashMatrixTests
         var again = new Reconciler(real, s.Journal).Run();
         Assert.Empty(again.Reset);
         Assert.Empty(again.Failed);
+        Assert.Empty(again.Resumed);
+        Assert.Empty(again.Unowned);
     }
 
     private static void AssertOriginalOrNew(string dest, byte[]? original, byte[] content)

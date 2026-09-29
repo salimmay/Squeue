@@ -24,6 +24,7 @@ public class TempNameTests
     [InlineData("photo.tmp")]
     [InlineData("~tqABCDEFGHIJ.tmp")]
     [InlineData("~tqabc.tmp")]
+    [InlineData("~tqabcdefghij.tmp\n")]
     public void Other_names_do_not_have_the_temp_shape(string name) =>
         Assert.False(TempNames.HasTempShape(name));
 }

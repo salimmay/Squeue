@@ -159,7 +159,7 @@ public sealed class Journal : IDisposable
     public IReadOnlyList<Attempt> AttemptsFor(long entryId) =>
         ReadAttempts("WHERE entry_id = $entry ORDER BY id", ("$entry", entryId));
 
-    public string Pragma(string name)
+    internal string Pragma(string name)
     {
         using var cmd = Command($"PRAGMA {name}");
         return Convert.ToString(cmd.ExecuteScalar())!;

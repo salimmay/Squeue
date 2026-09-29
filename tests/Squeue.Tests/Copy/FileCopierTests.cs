@@ -291,4 +291,18 @@ public class FileCopierTests
         Assert.Equal(EntryState.Failed, s.Journal.GetEntry(id).State);
         Assert.Empty(s.Journal.OpenAttempts());
     }
+
+    [Fact]
+    public void Unknown_hash_algorithm_fails_before_any_attempt()
+    {
+        using var s = new CopyScenario();
+        s.WriteSource([1]);
+        long id = s.AddEntry(hash: "blake9");
+
+        var result = new FileCopier(_fs, s.Journal, Options).CopyEntry(id);
+
+        Assert.Equal(CopyOutcome.Failed, result.Outcome);
+        Assert.Empty(s.Journal.AttemptsFor(id));
+        Assert.Empty(s.TempFiles());
+    }
 }

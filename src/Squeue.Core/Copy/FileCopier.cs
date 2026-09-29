@@ -40,6 +40,9 @@ public sealed class FileCopier
 
     private CopyResult StartAttempt(Entry entry)
     {
+        if (entry.HashAlgorithm is { } algorithm && !Hashers.Supported.Contains(algorithm))
+            return Fail(entry, $"Unknown hash algorithm '{algorithm}'.");
+
         ISourceFile source;
         try { source = OpenSourceWithRetry(entry.SrcPath); }
         catch (FsException ex) when (ex.IsSharingViolation) { return Fail(entry, "The source is in use by another program."); }
@@ -112,7 +115,8 @@ public sealed class FileCopier
 
                 // Make the rename durable. A failure here propagates; reconciliation will find the published file.
                 temp.Flush();
-                _journal.SetPhase(attemptId, AttemptPhase.Published, publishedFileId: tempId);
+                // Read after the rename: some filesystems (FAT/exFAT) can change a file's id when it is renamed.
+                _journal.SetPhase(attemptId, AttemptPhase.Published, publishedFileId: temp.GetIdentity().FileId);
             }
         }
 
