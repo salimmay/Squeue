@@ -376,12 +376,14 @@ public sealed class JobRunner : IJobQueue
         Publish(SnapshotOf(jobId));
     }
 
+    /// Asks every worker to stop first, so they all wind down together, then waits for each with what is left of
+    /// ShutdownTimeout.
     private void StopWorkers()
     {
+        foreach (var worker in _workers.Values) worker.Stop.Cancel();
         var clock = Stopwatch.StartNew();
         foreach (var worker in _workers.Values)
         {
-            worker.Stop.Cancel();
             var left = _options.ShutdownTimeout - clock.Elapsed;
             if (worker.Thread is not null && (left <= TimeSpan.Zero || !worker.Thread.Join(left)))
                 Trace.TraceWarning($"Job {worker.JobId} did not stop in time; it is left to end with the process.");
