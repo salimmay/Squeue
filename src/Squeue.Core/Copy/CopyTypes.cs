@@ -26,7 +26,8 @@ public enum CopyOutcome
     Cancelled,
 }
 
-public sealed record CopyResult(CopyOutcome Outcome, string? Message = null);
+/// <param name="Win32Error">For a failure caused by an I/O error, its Windows error code; otherwise 0.</param>
+public sealed record CopyResult(CopyOutcome Outcome, string? Message = null, int Win32Error = 0);
 
 public enum CopyStage { Copying, Verifying }
 

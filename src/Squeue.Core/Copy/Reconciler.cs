@@ -15,6 +15,9 @@ public sealed class ReconcileReport
 
     /// Files at a journaled temp name that we couldn't prove are ours. Left untouched.
     public List<string> Unowned { get; } = [];
+
+    /// Entries whose destination drive isn't connected or couldn't be read. Their attempt is left as it was, for a later run.
+    public List<long> Deferred { get; } = [];
 }
 
 /// After a crash, compares every open journal attempt with what is actually on disk and brings it
@@ -28,7 +31,17 @@ public sealed class Reconciler(IFileSystem fs, Journal journal)
     {
         var report = new ReconcileReport();
         foreach (var attempt in journal.OpenAttempts())
-            Reconcile(journal.GetEntry(attempt.EntryId), attempt, report);
+        {
+            var entry = journal.GetEntry(attempt.EntryId);
+            // Uncertainty keeps data: without the drive we can't tell what happened, so change nothing.
+            if (Path.GetPathRoot(entry.DestPath) is { Length: > 0 } root && !Directory.Exists(root))
+            {
+                report.Deferred.Add(entry.Id);
+                continue;
+            }
+            try { Reconcile(entry, attempt, report); }
+            catch (IOException) { report.Deferred.Add(entry.Id); }
+        }
         return report;
     }
 

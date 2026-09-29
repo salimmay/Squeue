@@ -25,6 +25,17 @@ public sealed class TestDir : IDisposable
         return bytes;
     }
 
+    /// A drive root such as Q:\ that isn't connected on this machine, searching from Z down to D.
+    public static string MissingDriveRoot()
+    {
+        for (char letter = 'Z'; letter >= 'D'; letter--)
+        {
+            string root = $"{letter}:\\";
+            if (!Directory.Exists(root)) return root;
+        }
+        throw new InvalidOperationException("Every drive letter from D to Z is in use.");
+    }
+
     public void Dispose()
     {
         try { Directory.Delete(Path, recursive: true); }

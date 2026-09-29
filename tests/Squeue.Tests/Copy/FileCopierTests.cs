@@ -146,6 +146,19 @@ public class FileCopierTests
     }
 
     [Fact]
+    public void Io_failures_carry_the_windows_error_code()
+    {
+        using var s = new CopyScenario();
+        s.WriteSource([1, 2, 3]);
+        long id = s.AddEntry();
+        using var writer = new FileStream(s.Src, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
+
+        var result = new FileCopier(_fs, s.Journal, Options).CopyEntry(id);
+
+        Assert.Equal((CopyOutcome.Failed, 32), (result.Outcome, result.Win32Error));
+    }
+
+    [Fact]
     public void Missing_source_fails_with_reason()
     {
         using var s = new CopyScenario();

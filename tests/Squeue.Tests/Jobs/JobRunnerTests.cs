@@ -179,6 +179,65 @@ public class JobRunnerTests
         Assert.Empty(TempFilesUnder(h.Dir.PathOf("backup")));
     }
 
+    private static void A_drive_error_pauses_the_job_and_resume_finishes(int win32Error, string reason)
+    {
+        using var h = new RunnerHarness(new ThrowingFileSystem(new WindowsFileSystem(), win32Error, failOnOpenSourceNumber: 2));
+        var files = new[] { ("a.bin", TestDir.RandomBytes(1000, 1)), ("b.bin", TestDir.RandomBytes(1000, 2)), ("c.bin", TestDir.RandomBytes(1000, 3)) };
+        var plan = PlanCard(h, files);
+        h.Runner.Start();
+
+        h.Runner.Enqueue(plan, OverwritePolicy.Replace, verify: true);
+        var p = h.WaitFor(s => s.State == JobState.Paused);
+
+        Assert.Contains(reason, p.LastError);
+        Assert.Equal((3, 1, 0), (p.TotalFiles, p.DoneFiles, p.FailedFiles));
+        using (var journal = Journal.Open(h.JournalPath))
+        {
+            Assert.Equal(new[] { EntryState.Done, EntryState.Pending, EntryState.Pending }, journal.EntriesOf(p.Id).Select(e => e.State));
+        }
+
+        h.Runner.Resume(p.Id);
+        var done = h.WaitFor(s => s.Id == p.Id && s.State == JobState.Done);
+
+        Assert.Equal((3, 3, 0), (done.TotalFiles, done.DoneFiles, done.FailedFiles));
+        foreach (var (name, content) in files) Assert.Equal(content, File.ReadAllBytes(h.Dir.PathOf($@"backup\card\{name}")));
+        Assert.Empty(TempFilesUnder(h.Dir.PathOf("backup")));
+    }
+
+    [Fact]
+    public void A_full_destination_pauses_the_job_and_fails_nothing() =>
+        A_drive_error_pauses_the_job_and_resume_finishes(112, "full");
+
+    [Fact]
+    public void A_device_error_pauses_the_job() =>
+        A_drive_error_pauses_the_job_and_resume_finishes(1167, "stopped responding");
+
+    [Fact]
+    public void A_job_whose_drive_is_missing_is_paused_not_failed()
+    {
+        using var h = new RunnerHarness();
+        string missing = TestDir.MissingDriveRoot();
+        var content = TestDir.RandomBytes(1000);
+        string src = h.Dir.Write(@"card\a.bin", content);
+        long jobId;
+        using (var journal = Journal.Open(h.JournalPath))
+        {
+            jobId = journal.CreateJob("xxh3", "card", h.Dir.PathOf("card"), missing + "Backup");
+            journal.AddEntry(jobId, src, missing + @"Backup\card\a.bin", content.Length, ConflictAction.Create, null);
+        }
+
+        h.Runner.Start();
+        var p = h.WaitFor(s => s.Id == jobId && s.State == JobState.Paused);
+
+        Assert.Equal($"{missing} isn't connected. Reconnect it and resume.", p.LastError);
+        Assert.Equal((0, 0), (p.DoneFiles, p.FailedFiles));
+        h.Runner.Dispose();
+        using (var journal = Journal.Open(h.JournalPath))
+        {
+            Assert.Equal(EntryState.Pending, journal.EntriesOf(jobId).Single().State);
+        }
+    }
+
     [Fact]
     public void A_subscriber_that_throws_does_not_stop_the_runner()
     {

@@ -124,6 +124,27 @@ public class ReconcilerTests
     }
 
     [Fact]
+    public void An_attempt_on_a_missing_drive_is_left_alone()
+    {
+        using var s = new CopyScenario();
+        s.WriteSource([1, 2, 3]);
+        string dest = TestDir.MissingDriveRoot() + @"Backup\a.bin";
+        long id = s.Journal.AddEntry(s.Journal.CreateJob("xxh3"), s.Src, dest, 3, ConflictAction.Create, null);
+        s.Journal.SetEntryState(id, EntryState.Active);
+        long attempt = s.Journal.BeginAttempt(id, "~tqcccccccccc.tmp", null);
+        s.Journal.SetPhase(attempt, AttemptPhase.TempCreated, tempFileId: (UInt128)7);
+        s.Journal.SetPhase(attempt, AttemptPhase.Published, publishedFileId: (UInt128)7);
+
+        var report = new Reconciler(_fs, s.Journal).Run();
+
+        Assert.Equal(new[] { id }, report.Deferred);
+        Assert.Empty(report.Failed);
+        Assert.Empty(report.Reset);
+        Assert.Equal(AttemptPhase.Published, s.Journal.GetOpenAttempt(id)!.Phase);
+        Assert.Equal(EntryState.Active, s.Journal.GetEntry(id).State);
+    }
+
+    [Fact]
     public void Running_twice_changes_nothing_the_second_time()
     {
         using var s = new CopyScenario();

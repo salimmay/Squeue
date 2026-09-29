@@ -55,15 +55,15 @@ public sealed class FileCopier
 
         ISourceFile source;
         try { source = OpenSourceWithRetry(entry.SrcPath); }
-        catch (FsException ex) when (ex.IsSharingViolation) { return Fail(entry, "The source is in use by another program."); }
-        catch (FsException ex) when (ex.IsNotFound) { return Fail(entry, "The source no longer exists."); }
-        catch (IOException ex) { return Fail(entry, ex.Message); }
+        catch (FsException ex) when (ex.IsSharingViolation) { return Fail(entry, "The source is in use by another program.", error: ErrorCode(ex)); }
+        catch (FsException ex) when (ex.IsNotFound) { return Fail(entry, "The source no longer exists.", error: ErrorCode(ex)); }
+        catch (IOException ex) { return Fail(entry, ex.Message, error: ErrorCode(ex)); }
 
         using (source)
         {
             _journal.RecordSourceVersion(entry.Id, source.Identity);
             try { _fs.CreateDirectory(entry.DestDirectory); }
-            catch (IOException ex) { return Fail(entry, ex.Message); }
+            catch (IOException ex) { return Fail(entry, ex.Message, error: ErrorCode(ex)); }
             catch (UnauthorizedAccessException ex) { return Fail(entry, ex.Message); }
 
             string tempName = TempNames.New();
@@ -77,7 +77,7 @@ public sealed class FileCopier
             try { temp = _fs.CreateTemp(tempPath); }
             catch (IOException ex)
             {
-                return Fail(entry, ex.Message, attemptId);
+                return Fail(entry, ex.Message, attemptId, ErrorCode(ex));
             }
 
             using (temp)
@@ -132,7 +132,7 @@ public sealed class FileCopier
                 catch (IOException ex)
                 {
                     Abandon(temp, tempPath, tempId);
-                    return Fail(entry, ex.Message, attemptId);
+                    return Fail(entry, ex.Message, attemptId, ErrorCode(ex));
                 }
 
                 // Make the rename durable. A failure here propagates; reconciliation will find the published file.
@@ -148,7 +148,11 @@ public sealed class FileCopier
     private CopyResult FinishPublished(Entry entry, Attempt attempt, IProgress<CopyProgress>? progress, CancellationToken cancellationToken)
     {
         // The file at the destination must still be the one this attempt published, whatever phase we resume from.
-        if (_fs.TryGetIdentity(entry.DestPath) is not { } current || current.FileId != attempt.PublishedFileId)
+        var found = _fs.TryGetIdentity(entry.DestPath);
+        // A disconnected drive says nothing about the published file: keep the attempt open for when it is back.
+        if (found is null && !VolumeConnected(entry.DestPath))
+            throw new FsException("verify", entry.DestPath, DeviceNotConnected);
+        if (found is not { } current || current.FileId != attempt.PublishedFileId)
             return Fail(entry, "The destination changed after it was copied. The source was kept.", attempt.Id);
 
         string? verifiedHash = null;
@@ -161,6 +165,8 @@ public sealed class FileCopier
             {
                 // The outcome and the attempt's close commit together, so a crash can't strand the entry.
                 var published = _fs.TryGetIdentity(entry.DestPath);
+                if (published is null && !VolumeConnected(entry.DestPath))
+                    throw new FsException("verify", entry.DestPath, DeviceNotConnected);
                 if (published is null)
                     return Fail(entry, "The copied file disappeared before it could be verified. The source was kept.", attempt.Id);
                 if (published.Value.FileId != attempt.PublishedFileId)
@@ -276,14 +282,21 @@ public sealed class FileCopier
         return result!;
     }
 
+    private const int DeviceNotConnected = 1167;
+
+    /// The Windows error code behind an I/O failure.
+    private static int ErrorCode(IOException ex) => ex is FsException fs ? fs.Win32Error : ex.HResult & 0xFFFF;
+
+    private static bool VolumeConnected(string path) => Path.GetPathRoot(path) is not { Length: > 0 } root || Directory.Exists(root);
+
     /// Fails the entry; when an attempt is given, it is closed in the same transaction.
-    private CopyResult Fail(Entry entry, string message, long? attemptId = null)
+    private CopyResult Fail(Entry entry, string message, long? attemptId = null, int error = 0)
     {
         _journal.Atomically(() =>
         {
             _journal.SetEntryState(entry.Id, EntryState.Failed, message);
             if (attemptId is { } id) _journal.SetPhase(id, AttemptPhase.Abandoned);
         });
-        return new CopyResult(CopyOutcome.Failed, message);
+        return new CopyResult(CopyOutcome.Failed, message, error);
     }
 }

@@ -107,7 +107,7 @@ public sealed class JobRunner : IJobQueue
             while (!_commands.IsAddingCompleted)
             {
                 DrainCommands();
-                var next = journal.Jobs().FirstOrDefault(j => j.State == JobState.Queued);
+                var next = NextRunnableJob();
                 if (next is not null)
                 {
                     RunJob(copier, next.Id);
@@ -180,7 +180,16 @@ public sealed class JobRunner : IJobQueue
                     // A drive or the journal misbehaved: this is not the file's fault. Clean up and pause the job.
                     try { new Reconciler(_fs, journal).Run(); }
                     catch (Exception ex) { Trace.TraceError($"Recovery after a failure did not complete: {ex}"); }
-                    _jobErrors[jobId] = stoppedReason;
+                    _jobErrors[jobId] = MissingVolume(job) is { } root ? NotConnected(root) : stoppedReason;
+                    journal.SetJobState(jobId, JobState.Paused);
+                    Publish(SnapshotOf(jobId));
+                    break;
+                }
+                if (result.Outcome == CopyOutcome.Failed && (IsDeviceTrouble(result.Win32Error) || MissingVolume(job) is not null))
+                {
+                    // The drive failed, not the file: put the file back in line (its attempt is already closed) and pause.
+                    journal.SetEntryState(entry.Id, EntryState.Pending);
+                    _jobErrors[jobId] = DeviceReason(job, result.Win32Error);
                     journal.SetJobState(jobId, JobState.Paused);
                     Publish(SnapshotOf(jobId));
                     break;
@@ -217,6 +226,42 @@ public sealed class JobRunner : IJobQueue
         }
         Publish(SnapshotOf(jobId));
     }
+
+    /// The first queued job whose drives are connected. Queued jobs with a missing drive are paused, not failed.
+    private JobRow? NextRunnableJob()
+    {
+        var journal = _journal!;
+        foreach (var job in journal.Jobs().Where(j => j.State == JobState.Queued))
+        {
+            if (MissingVolume(job) is not { } root) return job;
+            _jobErrors[job.Id] = NotConnected(root);
+            journal.SetJobState(job.Id, JobState.Paused);
+            Publish(SnapshotOf(job.Id));
+        }
+        return null;
+    }
+
+    /// Not ready, network name gone, device not connected (433, 1167), disk full (112, 39).
+    private static bool IsDeviceTrouble(int code) => code is 21 or 55 or 433 or 1167 or 112 or 39;
+
+    /// The root of the job's source or destination when that drive isn't connected.
+    private static string? MissingVolume(JobRow job)
+    {
+        foreach (string? path in new[] { job.Source, job.DestRoot })
+        {
+            if (string.IsNullOrEmpty(path)) continue;
+            string? root = Path.GetPathRoot(path);
+            if (!string.IsNullOrEmpty(root) && !Directory.Exists(root)) return root;
+        }
+        return null;
+    }
+
+    private static string NotConnected(string root) => $"{root} isn't connected. Reconnect it and resume.";
+
+    private static string DeviceReason(JobRow job, int code) =>
+        MissingVolume(job) is { } root ? NotConnected(root)
+        : code is 112 or 39 ? "The destination drive is full. Free some space and resume."
+        : "A drive stopped responding. Reconnect it and resume.";
 
     private CopyResult CopyOne(FileCopier copier, long entryId, IProgress<CopyProgress> progress, CancellationToken stop, out string? stoppedReason)
     {
