@@ -12,6 +12,10 @@ public sealed class Journal : IDisposable
         CREATE TABLE IF NOT EXISTS jobs (
           id         INTEGER PRIMARY KEY,
           hash_algo  TEXT,
+          name       TEXT,
+          source     TEXT,
+          dest_root  TEXT,
+          state      TEXT NOT NULL DEFAULT 'Queued',
           created_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS entries (
@@ -58,6 +62,7 @@ public sealed class Journal : IDisposable
         journal.Exec("PRAGMA synchronous = FULL;");
         journal.Exec("PRAGMA foreign_keys = ON;");
         journal.Exec(Schema);
+        journal.Migrate();
         return journal;
     }
 
@@ -78,8 +83,31 @@ public sealed class Journal : IDisposable
         }
     }
 
-    public long CreateJob(string? hashAlgorithm) =>
-        Insert("INSERT INTO jobs (hash_algo, created_at) VALUES ($hash, $now)", ("$hash", hashAlgorithm), ("$now", Now()));
+    public long CreateJob(string? hashAlgorithm, string? name = null, string? source = null, string? destRoot = null) =>
+        Insert("""
+            INSERT INTO jobs (hash_algo, name, source, dest_root, state, created_at)
+            VALUES ($hash, $name, $source, $dest, 'Queued', $now)
+            """,
+            ("$hash", hashAlgorithm), ("$name", name), ("$source", source), ("$dest", destRoot), ("$now", Now()));
+
+    public void SetJobState(long jobId, JobState state) =>
+        Exec("UPDATE jobs SET state = $s WHERE id = $id", ("$s", state.ToString()), ("$id", jobId));
+
+    public JobRow GetJob(long jobId) =>
+        ReadJobs("WHERE id = $id", ("$id", jobId)).SingleOrDefault() ?? throw new KeyNotFoundException($"No job {jobId}.");
+
+    public IReadOnlyList<JobRow> Jobs() => ReadJobs("ORDER BY id");
+
+    public IReadOnlyList<EntryRow> EntriesOf(long jobId)
+    {
+        using var cmd = Command("SELECT id, src_path, planned_size, state, error FROM entries WHERE job_id = $job ORDER BY id",
+            ("$job", jobId));
+        using var r = cmd.ExecuteReader();
+        var rows = new List<EntryRow>();
+        while (r.Read())
+            rows.Add(new EntryRow(r.GetInt64(0), r.GetString(1), r.GetInt64(2), Enum.Parse<EntryState>(r.GetString(3)), Text(r, 4)));
+        return rows;
+    }
 
     public long AddEntry(long jobId, string srcPath, string destPath, long plannedSize, ConflictAction action, FileIdentity? seenDest) =>
         Insert("""
@@ -166,6 +194,34 @@ public sealed class Journal : IDisposable
     }
 
     public void Dispose() => _db.Dispose();
+
+    private List<JobRow> ReadJobs(string where, params (string Name, object? Value)[] args)
+    {
+        using var cmd = Command("SELECT id, name, source, dest_root, state, hash_algo, created_at FROM jobs " + where, args);
+        using var r = cmd.ExecuteReader();
+        var rows = new List<JobRow>();
+        while (r.Read())
+        {
+            rows.Add(new JobRow(r.GetInt64(0), Text(r, 1), Text(r, 2), Text(r, 3),
+                Enum.Parse<JobState>(r.GetString(4)), Text(r, 5), r.GetInt64(6)));
+        }
+        return rows;
+    }
+
+    /// Adds columns that databases created by earlier builds don't have yet.
+    private void Migrate()
+    {
+        var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using (var cmd = Command("PRAGMA table_info(jobs)"))
+        using (var r = cmd.ExecuteReader())
+        {
+            while (r.Read()) columns.Add(r.GetString(1));
+        }
+        if (!columns.Contains("name")) Exec("ALTER TABLE jobs ADD COLUMN name TEXT");
+        if (!columns.Contains("source")) Exec("ALTER TABLE jobs ADD COLUMN source TEXT");
+        if (!columns.Contains("dest_root")) Exec("ALTER TABLE jobs ADD COLUMN dest_root TEXT");
+        if (!columns.Contains("state")) Exec("ALTER TABLE jobs ADD COLUMN state TEXT NOT NULL DEFAULT 'Queued'");
+    }
 
     private List<Attempt> ReadAttempts(string where, params (string Name, object? Value)[] args)
     {
