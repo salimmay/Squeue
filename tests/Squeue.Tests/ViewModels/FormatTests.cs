@@ -5,6 +5,7 @@ namespace Squeue.Tests.ViewModels;
 public class FormatTests
 {
     [Theory]
+    [InlineData(0, "0 B")]
     [InlineData(512, "512 B")]
     [InlineData(1536, "2 KB")]
     [InlineData(10 * 1048576L, "10 MB")]
@@ -16,6 +17,15 @@ public class FormatTests
     [InlineData(90, "2 min left")]
     [InlineData(3 * 3600 + 5 * 60, "3 h 5 min left")]
     public void TimeLeft(int seconds, string expected) => Assert.Equal(expected, Format.TimeLeft(TimeSpan.FromSeconds(seconds)));
+
+    [Fact]
+    public void TimeLeftFor_handles_edges() =>
+        Assert.Equal(new[] { "", "", "more than a day left", "under a minute left" },
+            new[]
+            {
+                Format.TimeLeftFor(0, 100), Format.TimeLeftFor(100, 0),
+                Format.TimeLeftFor(1073741824, 0.0001), Format.TimeLeftFor(100L * 1048576, 10 * 1048576),
+            });
 
     [Fact]
     public void Speed_and_count() =>

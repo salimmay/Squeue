@@ -128,6 +128,58 @@ public class ViewModelTests
     }
 
     [Fact]
+    public void A_nearly_finished_running_job_never_shows_100_percent()
+    {
+        var queue = new FakeJobQueue();
+        var main = NewMain(queue);
+
+        queue.Raise(FakeJobQueue.Snapshot(total: 1000, done: 999));
+
+        Assert.Equal("99%", main.Jobs[0].Percent);
+    }
+
+    [Fact]
+    public void An_empty_running_job_shows_no_time_left()
+    {
+        var queue = new FakeJobQueue();
+        var main = NewMain(queue);
+
+        queue.Raise(FakeJobQueue.Snapshot(total: 0, done: 0, speed: 0));
+
+        Assert.Equal("", main.Jobs[0].TimeLeft);
+    }
+
+    [Fact]
+    public void HasPlan_and_Policy_raise_change_notifications()
+    {
+        var main = NewMain(new FakeJobQueue());
+        var mainRaised = new List<string?>();
+        main.PropertyChanged += (_, e) => mainRaised.Add(e.PropertyName);
+
+        main.ProposePlan(new JobPlan("DCIM", @"E:\DCIM", @"F:\Backup", []));
+        var planRaised = new List<string?>();
+        main.PendingPlan!.PropertyChanged += (_, e) => planRaised.Add(e.PropertyName);
+        main.PendingPlan.Overwrite = true;
+
+        Assert.Contains("HasPlan", mainRaised);
+        Assert.Contains("Policy", planRaised);
+    }
+
+    [Fact]
+    public void Queue_events_are_applied_through_post()
+    {
+        var queue = new FakeJobQueue();
+        var posted = new List<Action>();
+        var main = new MainViewModel(queue, new FakeDrives(), posted.Add, () => Now);
+
+        queue.Raise(FakeJobQueue.Snapshot());
+        Assert.Empty(main.Jobs);
+        foreach (var action in posted.ToList()) action();
+
+        Assert.Single(main.Jobs);
+    }
+
+    [Fact]
     public void Drives_used_by_a_running_job_are_busy()
     {
         var queue = new FakeJobQueue();

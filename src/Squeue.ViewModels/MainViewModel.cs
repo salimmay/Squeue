@@ -79,11 +79,10 @@ public sealed partial class MainViewModel : ObservableObject
         var active = _latest.Values.Where(IsActive).ToList();
         long left = active.Sum(s => s.TotalBytes - s.DoneBytes);
         double speed = active.Where(s => s.State == JobState.Running).Sum(s => s.BytesPerSecond);
+        string eta = Format.TimeLeftFor(left, speed);
         Subtitle = active.Count == 0
             ? "Nothing to copy. Drop files or folders here."
-            : speed > 0
-                ? $"{Format.Bytes(left)} left · {Format.TimeLeft(TimeSpan.FromSeconds(left / speed))}"
-                : $"{Format.Bytes(left)} left";
+            : eta.Length > 0 ? $"{Format.Bytes(left)} left · {eta}" : $"{Format.Bytes(left)} left";
 
         int doneToday = _latest.Values.Count(s => s.State == JobState.Done && s.CreatedAtUtc.ToLocalTime().Date == _now().Date);
         DoneToday = doneToday == 0 ? "" : $"{doneToday} done today";

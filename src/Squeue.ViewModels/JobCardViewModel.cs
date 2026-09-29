@@ -25,14 +25,14 @@ public sealed partial class JobCardViewModel(long id, IJobQueue queue) : Observa
         Title = s.Name;
         Route = $"{s.Source} → {s.DestRoot}";
         Fraction = s.Fraction;
-        Percent = $"{Math.Round(s.Fraction * 100):0}%";
+        Percent = $"{(s.State == JobState.Done ? Math.Round(s.Fraction * 100) : Math.Floor(s.Fraction * 100)):0}%";
         State = s.State;
         IsRunning = s.State == JobState.Running;
         CanPause = s.State is JobState.Running or JobState.Queued;
         CanResume = s.State == JobState.Paused;
         Status = StatusText(s);
-        TimeLeft = s.State == JobState.Running && s.BytesPerSecond > 0
-            ? Format.TimeLeft(TimeSpan.FromSeconds((s.TotalBytes - s.DoneBytes) / s.BytesPerSecond))
+        TimeLeft = s.State == JobState.Running
+            ? Format.TimeLeftFor(s.TotalBytes - s.DoneBytes, s.BytesPerSecond)
             : "";
     }
 

@@ -24,6 +24,15 @@ public static class Format
         return string.Create(Culture, $"{(int)left.TotalHours} h {left.Minutes} min left");
     }
 
+    /// Time left for this many bytes at this speed. Empty when there is nothing left or no speed yet.
+    public static string TimeLeftFor(long bytesLeft, double bytesPerSecond)
+    {
+        if (bytesLeft <= 0 || !(bytesPerSecond > 0)) return "";
+        double seconds = bytesLeft / bytesPerSecond;
+        if (double.IsNaN(seconds) || seconds > TimeSpan.FromDays(1).TotalSeconds) return "more than a day left";
+        return TimeLeft(TimeSpan.FromSeconds(seconds));
+    }
+
     public static string Count(int count, string noun) =>
         count == 1 ? $"1 {noun}" : $"{count.ToString("N0", Culture)} {noun}s";
 }
