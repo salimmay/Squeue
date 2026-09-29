@@ -25,20 +25,30 @@ public sealed class FileCopier
         _journal = journal;
     }
 
-    public CopyResult CopyEntry(long entryId)
+    public CopyResult CopyEntry(long entryId, IProgress<CopyProgress>? progress = null, CancellationToken cancellationToken = default)
     {
-        var entry = _journal.GetEntry(entryId);
-        if (entry.State == EntryState.Done) return new CopyResult(CopyOutcome.Done);
+        try
+        {
+            var entry = _journal.GetEntry(entryId);
+            if (entry.State == EntryState.Done) return new CopyResult(CopyOutcome.Done);
 
-        var open = _journal.GetOpenAttempt(entryId);
-        if (open is { Phase: AttemptPhase.Published or AttemptPhase.Verified }) return FinishPublished(entry, open);
-        if (open is not null)
-            throw new InvalidOperationException($"Entry {entryId} has an unreconciled attempt. Run the Reconciler first.");
+            var open = _journal.GetOpenAttempt(entryId);
+            if (open is { Phase: AttemptPhase.Published or AttemptPhase.Verified })
+                return FinishPublished(entry, open, progress, cancellationToken);
+            if (open is not null)
+                throw new InvalidOperationException($"Entry {entryId} has an unreconciled attempt. Run the Reconciler first.");
 
-        return StartAttempt(entry);
+            cancellationToken.ThrowIfCancellationRequested();
+            return StartAttempt(entry, progress, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // In-flight work is already cleaned up (temp deleted) or left resumable (published, not yet verified).
+            return new CopyResult(CopyOutcome.Cancelled, "Stopped on request.");
+        }
     }
 
-    private CopyResult StartAttempt(Entry entry)
+    private CopyResult StartAttempt(Entry entry, IProgress<CopyProgress>? progress, CancellationToken cancellationToken)
     {
         if (entry.HashAlgorithm is { } algorithm && !Hashers.Supported.Contains(algorithm))
             return Fail(entry, $"Unknown hash algorithm '{algorithm}'.");
@@ -74,9 +84,10 @@ public sealed class FileCopier
             {
                 UInt128 tempId = temp.GetIdentity().FileId;
                 _journal.SetPhase(attemptId, AttemptPhase.TempCreated, tempFileId: tempId);
+                long size = source.Identity.Size;
                 try
                 {
-                    string? srcHash = WriteTemp(source, temp, entry.HashAlgorithm);
+                    string? srcHash = WriteTemp(source, temp, entry.HashAlgorithm, progress, cancellationToken);
                     _journal.SetHashes(entry.Id, srcHash, null);
                     _journal.SetPhase(attemptId, AttemptPhase.Written);
                     source.Dispose(); // fully read; release it before publishing
@@ -86,7 +97,7 @@ public sealed class FileCopier
                         // Never replace an existing file with one that hasn't passed verification.
                         if (srcHash is not null)
                         {
-                            string tempHash = HashUnbuffered(tempPath, entry.HashAlgorithm!);
+                            string tempHash = HashUnbuffered(tempPath, entry.HashAlgorithm!, size, progress, cancellationToken);
                             if (tempHash != srcHash)
                             {
                                 Abandon(temp, tempPath, tempId);
@@ -107,6 +118,17 @@ public sealed class FileCopier
                     try { temp.RenameTo(entry.DestPath, replaceExisting: entry.Action == ConflictAction.Replace); }
                     catch (FsException ex) when (ex.IsAlreadyExists) { return DestinationChanged(entry, temp, tempPath, tempId, attemptId); }
                 }
+                catch (OperationCanceledException)
+                {
+                    // Stopped before publishing: nothing reached the final name, so remove the temp and start over later.
+                    Abandon(temp, tempPath, tempId);
+                    _journal.Atomically(() =>
+                    {
+                        _journal.SetEntryState(entry.Id, EntryState.Pending);
+                        _journal.SetPhase(attemptId, AttemptPhase.Abandoned);
+                    });
+                    throw;
+                }
                 catch (IOException ex)
                 {
                     Abandon(temp, tempPath, tempId);
@@ -120,10 +142,10 @@ public sealed class FileCopier
             }
         }
 
-        return FinishPublished(_journal.GetEntry(entry.Id), _journal.GetOpenAttempt(entry.Id)!);
+        return FinishPublished(_journal.GetEntry(entry.Id), _journal.GetOpenAttempt(entry.Id)!, progress, cancellationToken);
     }
 
-    private CopyResult FinishPublished(Entry entry, Attempt attempt)
+    private CopyResult FinishPublished(Entry entry, Attempt attempt, IProgress<CopyProgress>? progress, CancellationToken cancellationToken)
     {
         // The file at the destination must still be the one this attempt published, whatever phase we resume from.
         if (_fs.TryGetIdentity(entry.DestPath) is not { } current || current.FileId != attempt.PublishedFileId)
@@ -133,7 +155,8 @@ public sealed class FileCopier
         bool needsVerification = attempt.Phase == AttemptPhase.Published && entry.HashAlgorithm is not null && entry.DestHash is null;
         if (needsVerification)
         {
-            string destHash = HashUnbuffered(entry.DestPath, entry.HashAlgorithm!);
+            // Cancelling here leaves the attempt Published: the next CopyEntry verifies it again.
+            string destHash = HashUnbuffered(entry.DestPath, entry.HashAlgorithm!, current.Size, progress, cancellationToken);
             if (destHash != entry.SrcHash)
             {
                 // The outcome and the attempt's close commit together, so a crash can't strand the entry.
@@ -156,21 +179,25 @@ public sealed class FileCopier
         return new CopyResult(CopyOutcome.Done);
     }
 
-    private string? WriteTemp(ISourceFile source, ITempFile temp, string? algorithm)
+    private string? WriteTemp(ISourceFile source, ITempFile temp, string? algorithm,
+        IProgress<CopyProgress>? progress, CancellationToken cancellationToken)
     {
         var hasher = algorithm is null ? null : Hashers.Create(algorithm);
-        temp.Preallocate(source.Identity.Size);
+        long total = source.Identity.Size;
+        temp.Preallocate(total);
 
         var buffer = new byte[_options.ChunkSize];
         long offset = 0;
         while (true)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             int read = source.Read(buffer, offset);
             if (read == 0) break;
             var chunk = buffer.AsSpan(0, read);
             hasher?.Append(chunk);
             temp.Write(chunk, offset);
             offset += read;
+            progress?.Report(new CopyProgress(CopyStage.Copying, offset, total));
         }
 
         temp.SetLength(offset);
@@ -180,7 +207,8 @@ public sealed class FileCopier
         return hasher?.FinishHex();
     }
 
-    private string HashUnbuffered(string path, string algorithm)
+    private string HashUnbuffered(string path, string algorithm, long total,
+        IProgress<CopyProgress>? progress, CancellationToken cancellationToken)
     {
         var hasher = Hashers.Create(algorithm);
         using var file = _fs.OpenForVerify(path);
@@ -188,10 +216,12 @@ public sealed class FileCopier
         long offset = 0;
         while (true)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             int read = file.Read(buffer.Span, offset);
             if (read == 0) break;
             hasher.Append(buffer.Span[..read]);
             offset += read;
+            progress?.Report(new CopyProgress(CopyStage.Verifying, offset, total));
             if (read < buffer.Length) break;
         }
         return hasher.FinishHex();
