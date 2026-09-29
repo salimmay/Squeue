@@ -167,7 +167,11 @@ public sealed class JobRunner : IJobQueue
         {
             if (job.State != JobState.Queued || _workers.ContainsKey(job.Id)) continue;
             var r = ResourcesOf(job, journal.EntriesOf(job.Id), disksOf);
-            if (r.MissingRoot is { } missing)
+            // A job with only copies left to verify needs just its destination; the card may be gone by now.
+            if ((r.MissingRoot
+                 ?? (r.VerifyOnly
+                     ? DriveProblems.MissingDestination(job, _options.DriveConnected)
+                     : DriveProblems.MissingVolume(job, _options.DriveConnected))) is { } missing)
             {
                 PauseWithReason(job.Id, DriveProblems.NotConnected(missing));
                 continue;

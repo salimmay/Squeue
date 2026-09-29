@@ -135,4 +135,92 @@ public class MultiDriveTests
         Assert.StartsWith("Not enough space on", paused.LastError);
         Assert.Equal(0, paused.DoneFiles);
     }
+
+    /// A drive check that reports paths through the named folder as disconnected once the card is pulled.
+    /// (In tests source and destination share one volume, so the check goes by folder, like FolderTopology.)
+    private sealed class PullableCard(string folder)
+    {
+        private volatile bool _pulled;
+
+        public void Pull() => _pulled = true;
+
+        public JobRunnerOptions Options => RunnerHarness.Options with { DriveConnected = Connected };
+
+        private bool Connected(string path) =>
+            !_pulled || !Path.GetFullPath(path).Split(Path.DirectorySeparatorChar)
+                .Contains(folder, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static JobPlan PlanTwoFiles(RunnerHarness h, string source, string dest)
+    {
+        h.Dir.Write(Path.Combine(source, "a.bin"), TestDir.RandomBytes(20_000, 1));
+        h.Dir.Write(Path.Combine(source, "b.bin"), TestDir.RandomBytes(20_000, 2));
+        return JobPlanner.Plan(h.Fs, [h.Dir.PathOf(source)], h.Dir.PathOf(dest));
+    }
+
+    [Fact]
+    public void Pulling_the_card_during_verification_does_not_pause_the_job()
+    {
+        var gates = new GateFileSystem(new WindowsFileSystem());
+        var card = new PullableCard("cardA1");
+        using var h = new RunnerHarness(gates, Topology(), options: card.Options);
+        var plan = PlanTwoFiles(h, "cardA1", "hddA");
+        var holdVerify = gates.HoldVerificationUnder(h.Dir.PathOf("hddA"));
+        JobSnapshot end;
+        try
+        {
+            h.Runner.Start();
+            h.Runner.Enqueue(plan, OverwritePolicy.Replace, verify: true);
+            var verifying = h.WaitFor(s => s.State == JobState.Verifying);
+
+            // The card is pulled, and b.bin's copy is replaced by another program before it is verified:
+            // a real per-file failure that has nothing to do with the card.
+            card.Pull();
+            string b = h.Dir.PathOf(@"hddA\cardA1\b.bin");
+            File.Delete(b);
+            File.WriteAllBytes(b, [1, 2, 3]);
+            holdVerify.Set();
+
+            end = h.WaitFor(s => s.Id == verifying.Id && s.State is JobState.Done or JobState.Paused);
+        }
+        finally { holdVerify.Set(); }
+
+        Assert.Equal(JobState.Done, end.State);
+        Assert.Equal((2, 1, 1), (end.TotalFiles, end.DoneFiles, end.FailedFiles));
+        Assert.Contains("destination changed", end.LastError);
+        Assert.DoesNotContain(h.Events, s => s.State == JobState.Paused);
+        Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(h.Dir.PathOf(@"hddA\cardA1\b.bin")));
+    }
+
+    [Fact]
+    public void A_copy_that_fails_verification_after_the_card_is_pulled_waits_for_the_card()
+    {
+        var gates = new GateFileSystem(new WindowsFileSystem());
+        var card = new PullableCard("cardA1");
+        using var h = new RunnerHarness(gates, Topology(), options: card.Options);
+        var plan = PlanTwoFiles(h, "cardA1", "hddA");
+        gates.CorruptNextVerificationOf(h.Dir.PathOf(@"hddA\cardA1\b.bin"));
+        var holdVerify = gates.HoldVerificationUnder(h.Dir.PathOf("hddA"));
+        JobSnapshot paused;
+        try
+        {
+            h.Runner.Start();
+            h.Runner.Enqueue(plan, OverwritePolicy.Replace, verify: true);
+            h.WaitFor(s => s.State == JobState.Verifying);
+            card.Pull();
+            holdVerify.Set();
+
+            paused = h.WaitFor(s => s.State == JobState.Paused);
+        }
+        finally { holdVerify.Set(); }
+
+        // b.bin failed verification once, so the protocol copies it again; that needs the card, which is gone.
+        Assert.Equal(DriveProblems.NotConnected(Path.GetPathRoot(h.Dir.PathOf("cardA1"))!), paused.LastError);
+        Assert.Equal((2, 1, 0), (paused.TotalFiles, paused.DoneFiles, paused.FailedFiles));
+        h.Runner.Dispose();
+        using var journal = Journal.Open(h.JournalPath);
+        var entries = journal.EntriesOf(paused.Id);
+        Assert.Equal(new[] { EntryState.Done, EntryState.Pending }, entries.Select(e => e.State));
+        Assert.Equal(1, journal.GetEntry(entries[1].Id).VerifyFailures);
+    }
 }

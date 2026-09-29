@@ -52,4 +52,7 @@ public sealed record JobRunnerOptions
     /// How long Dispose waits for the current file to stop. The runner thread is a background thread, so the
     /// process can still exit after this; the copy protocol makes a stop mid-write safe.
     public TimeSpan ShutdownTimeout { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// Whether the drive holding a path is connected. Tests replace it to pretend a drive was pulled.
+    internal Func<string, bool> DriveConnected { get; init; } = DriveProblems.DriveConnected;
 }

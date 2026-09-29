@@ -59,7 +59,7 @@ internal sealed class JobWorker
             {
                 if (_stop.IsCancellationRequested) return null;
                 var result = CopyOne(copier, entry, defer, allowRetry: true, out string? stopped);
-                if (Stops(entry, result, stopped) is { } outcome)
+                if (Stops(entry, result, stopped, JobState.Running) is { } outcome)
                 {
                     if (!outcome.VerifyFirst) return outcome.Reason;
                     pauseAfterVerifying = outcome.Reason;
@@ -80,7 +80,7 @@ internal sealed class JobWorker
             if (_stop.IsCancellationRequested) return null;
             // A failed verification leaves the file Pending; the job's next pass re-copies it with the source drive.
             var result = CopyOne(copier, entry, deferVerification: false, allowRetry: false, out string? stopped);
-            if (Stops(entry, result, stopped) is { } outcome) return outcome.Reason;
+            if (Stops(entry, result, stopped, JobState.Verifying) is { } outcome) return outcome.Reason;
             Count(entry, result);
         }
         return pauseAfterVerifying;
@@ -90,24 +90,32 @@ internal sealed class JobWorker
     private sealed record Stop(string? Reason, bool VerifyFirst = false);
 
     /// Whether this result ends the run: a stop request (null reason), or a drive/journal problem (a reason).
-    private Stop? Stops(EntryRow entry, CopyResult result, string? stopped)
+    /// The stage decides which drives count: copying needs source and destination, verifying only the destination
+    /// (the source may be gone by then, legitimately: the coordinator freed it).
+    private Stop? Stops(EntryRow entry, CopyResult result, string? stopped, JobState stage)
     {
         if (result.Outcome == CopyOutcome.Cancelled) return new Stop(null);
         if (stopped is not null)
         {
             // A drive or the journal misbehaved: not the file's fault. Settle this job's attempts and pause.
             Reconcile();
-            return new Stop(MissingVolumeReason() ?? stopped);
+            return new Stop(MissingRoot(stage) is { } root ? DriveProblems.NotConnected(root) : stopped);
         }
-        if (result.Outcome == CopyOutcome.Failed && (DriveProblems.IsDeviceTrouble(result.Win32Error) || MissingVolumeReason() is not null))
-        {
-            // The drive failed, not the file: put the file back in line (its attempt is already closed) and pause.
-            _journal.SetEntryState(entry.Id, EntryState.Pending);
-            // Verifying reads only the destination; if that is the drive that failed, verification pauses on its own.
-            return new Stop(DriveProblems.DeviceReason(_job, result.Win32Error), VerifyFirst: true);
-        }
-        return null;
+        if (result.Outcome != CopyOutcome.Failed) return null;
+        string? missing = MissingRoot(stage);
+        // Anything else is the file's own failure: it stays Failed with its message and the job goes on.
+        if (!DriveProblems.IsDeviceTrouble(result.Win32Error) && missing is null) return null;
+        // The drive failed, not the file: put the file back in line (its attempt is already closed) and pause.
+        _journal.SetEntryState(entry.Id, EntryState.Pending);
+        // While copying, what is already published is verified first: verifying reads only the destination, and if
+        // that is the drive that failed, verification pauses on its own.
+        return new Stop(DriveProblems.DeviceReason(missing, result.Win32Error), VerifyFirst: stage == JobState.Running);
     }
+
+    /// The root of a drive the stage needs that isn't connected.
+    private string? MissingRoot(JobState stage) => stage == JobState.Verifying
+        ? DriveProblems.MissingDestination(_job, _options.DriveConnected)
+        : DriveProblems.MissingVolume(_job, _options.DriveConnected);
 
     private void Count(EntryRow entry, CopyResult result)
     {
@@ -157,9 +165,6 @@ internal sealed class JobWorker
         try { new Reconciler(_fs, _journal).Run(entry => entry.JobId == _jobId); }
         catch (Exception ex) { Trace.TraceError($"Recovery for job {_jobId} did not complete: {ex}"); }
     }
-
-    private string? MissingVolumeReason() =>
-        DriveProblems.MissingVolume(_job) is { } root ? DriveProblems.NotConnected(root) : null;
 
     private void StartStage(JobState state, long total, long done)
     {

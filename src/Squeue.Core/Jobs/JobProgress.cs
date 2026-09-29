@@ -54,22 +54,30 @@ internal static class DriveProblems
     /// Not ready, network name gone, device not connected (433, 1167), disk full (112, 39).
     public static bool IsDeviceTrouble(int code) => code is 21 or 55 or 433 or 1167 or 112 or 39;
 
+    /// The default drive check: a path's drive is connected when its root exists (paths without a root count as connected).
+    public static bool DriveConnected(string path) =>
+        Path.GetPathRoot(path) is not { Length: > 0 } root || Directory.Exists(root);
+
     /// The root of the job's source or destination when that drive isn't connected.
-    public static string? MissingVolume(JobRow job)
+    public static string? MissingVolume(JobRow job, Func<string, bool> connected) =>
+        MissingRootOf(job.Source, connected) ?? MissingRootOf(job.DestRoot, connected);
+
+    /// The root of the job's destination when that drive isn't connected. Verifying needs nothing else.
+    public static string? MissingDestination(JobRow job, Func<string, bool> connected) =>
+        MissingRootOf(job.DestRoot, connected);
+
+    private static string? MissingRootOf(string? path, Func<string, bool> connected)
     {
-        foreach (string? path in new[] { job.Source, job.DestRoot })
-        {
-            if (string.IsNullOrEmpty(path)) continue;
-            string? root = Path.GetPathRoot(path);
-            if (!string.IsNullOrEmpty(root) && !Directory.Exists(root)) return root;
-        }
-        return null;
+        if (string.IsNullOrEmpty(path)) return null;
+        string? root = Path.GetPathRoot(path);
+        return !string.IsNullOrEmpty(root) && !connected(path) ? root : null;
     }
 
     public static string NotConnected(string root) => $"{root} isn't connected. Reconnect it and resume.";
 
-    public static string DeviceReason(JobRow job, int code) =>
-        MissingVolume(job) is { } root ? NotConnected(root)
+    /// Why a device error paused the job; missingRoot is the job's missing drive, if one is.
+    public static string DeviceReason(string? missingRoot, int code) =>
+        missingRoot is { } root ? NotConnected(root)
         : code is 112 or 39 ? "The destination drive is full. Free some space and resume."
         : "A drive stopped responding. Reconnect it and resume.";
 }
