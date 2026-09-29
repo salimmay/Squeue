@@ -27,6 +27,9 @@ public enum CopyOutcome
 
     /// Stopped on request. A half-written temp was removed; a published copy is verified when the entry resumes.
     Cancelled,
+
+    /// Copied and published at its final name; its verification is still to do (see deferVerification).
+    Published,
 }
 
 /// <param name="Win32Error">For a failure caused by an I/O error, its Windows error code; otherwise 0.</param>

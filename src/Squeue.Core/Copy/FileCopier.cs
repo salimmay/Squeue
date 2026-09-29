@@ -42,7 +42,7 @@ public sealed class FileCopier
         return _pipeline.Run(read, onRead, consume, stopOnShortRead, overlap, cancellationToken);
     }
 
-    public CopyResult CopyEntry(long entryId, IProgress<CopyProgress>? progress = null, CancellationToken cancellationToken = default)
+    public CopyResult CopyEntry(long entryId, IProgress<CopyProgress>? progress = null, CancellationToken cancellationToken = default, bool deferVerification = false)
     {
         try
         {
@@ -51,12 +51,14 @@ public sealed class FileCopier
 
             var open = _journal.GetOpenAttempt(entryId);
             if (open is { Phase: AttemptPhase.Published or AttemptPhase.Verified })
-                return FinishPublished(entry, open, progress, cancellationToken);
+                return deferVerification && NeedsVerification(entry, open)
+                    ? new CopyResult(CopyOutcome.Published)
+                    : FinishPublished(entry, open, progress, cancellationToken);
             if (open is not null)
                 throw new InvalidOperationException($"Entry {entryId} has an unreconciled attempt. Run the Reconciler first.");
 
             cancellationToken.ThrowIfCancellationRequested();
-            return StartAttempt(entry, progress, cancellationToken);
+            return StartAttempt(entry, progress, cancellationToken, deferVerification);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -65,7 +67,7 @@ public sealed class FileCopier
         }
     }
 
-    private CopyResult StartAttempt(Entry entry, IProgress<CopyProgress>? progress, CancellationToken cancellationToken)
+    private CopyResult StartAttempt(Entry entry, IProgress<CopyProgress>? progress, CancellationToken cancellationToken, bool deferVerification)
     {
         if (entry.HashAlgorithm is { } algorithm && !Hashers.Supported.Contains(algorithm))
             return Fail(entry, $"Unknown hash algorithm '{algorithm}'.");
@@ -170,7 +172,11 @@ public sealed class FileCopier
             }
         }
 
-        return FinishPublished(_journal.GetEntry(entry.Id), _journal.GetOpenAttempt(entry.Id)!, progress, cancellationToken);
+        var published = _journal.GetEntry(entry.Id);
+        var attempt = _journal.GetOpenAttempt(entry.Id)!;
+        // Deferred: the file is safely at its final name; the job verifies it later, without the source drive.
+        if (deferVerification && NeedsVerification(published, attempt)) return new CopyResult(CopyOutcome.Published);
+        return FinishPublished(published, attempt, progress, cancellationToken);
     }
 
     private CopyResult FinishPublished(Entry entry, Attempt attempt, IProgress<CopyProgress>? progress, CancellationToken cancellationToken)
@@ -184,7 +190,7 @@ public sealed class FileCopier
             return Fail(entry, "The destination changed after it was copied. The source was kept.", attempt.Id);
 
         string? verifiedHash = null;
-        bool needsVerification = attempt.Phase == AttemptPhase.Published && entry.HashAlgorithm is not null && entry.DestHash is null;
+        bool needsVerification = NeedsVerification(entry, attempt);
         if (needsVerification)
         {
             // Cancelling here leaves the attempt Published: the next CopyEntry verifies it again.
@@ -212,6 +218,10 @@ public sealed class FileCopier
         });
         return new CopyResult(CopyOutcome.Done);
     }
+
+    /// A published copy still has to be read back unless it has no hash to check or was verified before publishing.
+    private static bool NeedsVerification(Entry entry, Attempt attempt) =>
+        attempt.Phase == AttemptPhase.Published && entry.HashAlgorithm is not null && entry.DestHash is null;
 
     private string? WriteTemp(ISourceFile source, ITempFile temp, string? algorithm,
         IProgress<CopyProgress>? progress, CancellationToken cancellationToken)
