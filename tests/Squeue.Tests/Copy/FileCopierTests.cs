@@ -210,6 +210,67 @@ public class FileCopierTests
     }
 
     [Fact]
+    public void Stale_hashes_from_an_earlier_attempt_do_not_skip_verification()
+    {
+        using var s = new CopyScenario();
+        s.WriteSource(TestDir.RandomBytes(Chunk));
+        long id = s.AddEntry();
+        s.Journal.SetHashes(id, "stale", "stale");
+        var copier = new FileCopier(new FaultyFileSystem(_fs) { CorruptVerifyReads = true }, s.Journal, Options);
+
+        Assert.Equal(CopyOutcome.RetryNeeded, copier.CopyEntry(id).Outcome);
+    }
+
+    [Fact]
+    public void Resume_does_not_adopt_a_destination_someone_else_replaced()
+    {
+        using var s = new CopyScenario();
+        s.WriteSource(TestDir.RandomBytes(5000));
+        long id = s.AddEntry();
+        var crashing = new FaultyFileSystem(_fs) { CrashAt = (FsOp.OpenForVerify, false, 1) };
+        Assert.Throws<SimulatedCrashException>(() => new FileCopier(crashing, s.Journal, Options).CopyEntry(id));
+        File.Delete(s.Dest);
+        File.WriteAllBytes(s.Dest, [5, 5]);
+        s.ReopenJournal();
+
+        var result = new FileCopier(_fs, s.Journal, Options).CopyEntry(id);
+
+        Assert.Equal(CopyOutcome.Failed, result.Outcome);
+        Assert.Equal(new byte[] { 5, 5 }, File.ReadAllBytes(s.Dest));
+        Assert.Equal(ConflictAction.Create, s.Journal.GetEntry(id).Action);
+    }
+
+    [Fact]
+    public void Resumes_a_published_attempt_after_restart()
+    {
+        using var s = new CopyScenario();
+        var content = TestDir.RandomBytes(Chunk + 3);
+        s.WriteSource(content);
+        long id = s.AddEntry();
+        var crashing = new FaultyFileSystem(_fs) { CrashAt = (FsOp.OpenForVerify, false, 1) };
+        Assert.Throws<SimulatedCrashException>(() => new FileCopier(crashing, s.Journal, Options).CopyEntry(id));
+        s.ReopenJournal();
+
+        Assert.Equal(CopyOutcome.Done, new FileCopier(_fs, s.Journal, Options).CopyEntry(id).Outcome);
+        Assert.Equal(content, File.ReadAllBytes(s.Dest));
+        Assert.Single(s.Journal.AttemptsFor(id));
+        Assert.Empty(s.Journal.OpenAttempts());
+    }
+
+    [Fact]
+    public void Refuses_to_start_while_an_earlier_attempt_is_unreconciled()
+    {
+        using var s = new CopyScenario();
+        s.WriteSource(TestDir.RandomBytes(100));
+        long id = s.AddEntry();
+        var crashing = new FaultyFileSystem(_fs) { CrashAt = (FsOp.CreateTemp, true, 1) };
+        Assert.Throws<SimulatedCrashException>(() => new FileCopier(crashing, s.Journal, Options).CopyEntry(id));
+        s.ReopenJournal();
+
+        Assert.Throws<InvalidOperationException>(() => new FileCopier(_fs, s.Journal, Options).CopyEntry(id));
+    }
+
+    [Fact]
     public void Rejects_unaligned_chunk_sizes() =>
         Assert.Throws<ArgumentException>(() => new FileCopier(_fs, null!, new CopyOptions { ChunkSize = 1000 }));
 }

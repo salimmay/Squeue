@@ -93,6 +93,9 @@ public sealed class Journal : IDisposable
     public void SetEntryState(long entryId, EntryState state, string? error = null) =>
         Exec("UPDATE entries SET state = $s, error = $e WHERE id = $id", ("$s", state.ToString()), ("$e", error), ("$id", entryId));
 
+    public void ClearHashes(long entryId) =>
+        Exec("UPDATE entries SET src_hash = NULL, dest_hash = NULL WHERE id = $id", ("$id", entryId));
+
     public void SetHashes(long entryId, string? srcHash, string? destHash) =>
         Exec("UPDATE entries SET src_hash = COALESCE($src, src_hash), dest_hash = COALESCE($dest, dest_hash) WHERE id = $id",
             ("$src", srcHash), ("$dest", destHash), ("$id", entryId));

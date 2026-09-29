@@ -57,6 +57,7 @@ public sealed class FileCopier
             string tempPath = Path.Combine(entry.DestDirectory, tempName);
             UInt128? replaces = entry.Action == ConflictAction.Replace ? entry.SeenDest?.FileId : null;
             long attemptId = _journal.BeginAttempt(entry.Id, tempName, replaces); // intent is durable before the file exists
+            _journal.ClearHashes(entry.Id); // hashes from an earlier attempt must never satisfy this one
             _journal.SetEntryState(entry.Id, EntryState.Active);
 
             ITempFile temp;
@@ -128,9 +129,12 @@ public sealed class FileCopier
             if (destHash != entry.SrcHash)
             {
                 _journal.SetPhase(attempt.Id, AttemptPhase.Abandoned);
-                return _fs.TryGetIdentity(entry.DestPath) is { } published
-                    ? VerificationFailed(entry, replaceTarget: published)
-                    : Fail(entry, "The copied file disappeared before it could be verified. The source was kept.");
+                var published = _fs.TryGetIdentity(entry.DestPath);
+                if (published is null)
+                    return Fail(entry, "The copied file disappeared before it could be verified. The source was kept.");
+                if (published.Value.FileId != attempt.PublishedFileId)
+                    return Fail(entry, "The destination changed after it was copied. The source was kept.");
+                return VerificationFailed(entry, replaceTarget: published.Value);
             }
             _journal.SetHashes(entry.Id, null, destHash);
             _journal.SetPhase(attempt.Id, AttemptPhase.Verified);
