@@ -64,8 +64,7 @@ public sealed class FileCopier
             try { temp = _fs.CreateTemp(tempPath); }
             catch (IOException ex)
             {
-                _journal.SetPhase(attemptId, AttemptPhase.Abandoned);
-                return Fail(entry, ex.Message);
+                return Fail(entry, ex.Message, attemptId);
             }
 
             using (temp)
@@ -87,8 +86,8 @@ public sealed class FileCopier
                             string tempHash = HashUnbuffered(tempPath, entry.HashAlgorithm!);
                             if (tempHash != srcHash)
                             {
-                                Abandon(temp, tempPath, tempId, attemptId);
-                                return VerificationFailed(entry, replaceTarget: null);
+                                Abandon(temp, tempPath, tempId);
+                                return VerificationFailed(entry, attemptId, replaceTarget: null);
                             }
                             _journal.SetHashes(entry.Id, null, tempHash);
                             _journal.SetPhase(attemptId, AttemptPhase.VerifiedTemp);
@@ -107,8 +106,8 @@ public sealed class FileCopier
                 }
                 catch (IOException ex)
                 {
-                    Abandon(temp, tempPath, tempId, attemptId);
-                    return Fail(entry, ex.Message);
+                    Abandon(temp, tempPath, tempId);
+                    return Fail(entry, ex.Message, attemptId);
                 }
 
                 // Make the rename durable. A failure here propagates; reconciliation will find the published file.
@@ -122,31 +121,30 @@ public sealed class FileCopier
 
     private CopyResult FinishPublished(Entry entry, Attempt attempt)
     {
+        string? verifiedHash = null;
         bool needsVerification = attempt.Phase == AttemptPhase.Published && entry.HashAlgorithm is not null && entry.DestHash is null;
         if (needsVerification)
         {
             string destHash = HashUnbuffered(entry.DestPath, entry.HashAlgorithm!);
             if (destHash != entry.SrcHash)
             {
-                // Record the outcome on the entry first, then close the attempt (same order as the Reconciler),
-                // so a crash in between leaves an open attempt for recovery instead of an orphaned copy.
+                // The outcome and the attempt's close commit together, so a crash can't strand the entry.
                 var published = _fs.TryGetIdentity(entry.DestPath);
-                CopyResult failed;
                 if (published is null)
-                    failed = Fail(entry, "The copied file disappeared before it could be verified. The source was kept.");
-                else if (published.Value.FileId != attempt.PublishedFileId)
-                    failed = Fail(entry, "The destination changed after it was copied. The source was kept.");
-                else
-                    failed = VerificationFailed(entry, replaceTarget: published.Value);
-                _journal.SetPhase(attempt.Id, AttemptPhase.Abandoned);
-                return failed;
+                    return Fail(entry, "The copied file disappeared before it could be verified. The source was kept.", attempt.Id);
+                if (published.Value.FileId != attempt.PublishedFileId)
+                    return Fail(entry, "The destination changed after it was copied. The source was kept.", attempt.Id);
+                return VerificationFailed(entry, attempt.Id, replaceTarget: published.Value);
             }
-            _journal.SetHashes(entry.Id, null, destHash);
-            _journal.SetPhase(attempt.Id, AttemptPhase.Verified);
+            verifiedHash = destHash;
         }
 
-        _journal.SetPhase(attempt.Id, AttemptPhase.Finished);
-        _journal.SetEntryState(entry.Id, EntryState.Done);
+        _journal.Atomically(() =>
+        {
+            if (verifiedHash is not null) _journal.SetHashes(entry.Id, null, verifiedHash);
+            _journal.SetPhase(attempt.Id, AttemptPhase.Finished);
+            _journal.SetEntryState(entry.Id, EntryState.Done);
+        });
         return new CopyResult(CopyOutcome.Done);
     }
 
@@ -204,31 +202,50 @@ public sealed class FileCopier
         }
     }
 
-    private void Abandon(ITempFile temp, string tempPath, UInt128 tempId, long attemptId)
+    /// Closes our handle and deletes the temp file. The caller records the outcome and closes the attempt.
+    private void Abandon(ITempFile temp, string tempPath, UInt128 tempId)
     {
         temp.Dispose(); // close our handle so the delete can open the file
         _fs.DeleteIfSameObject(tempPath, tempId);
-        _journal.SetPhase(attemptId, AttemptPhase.Abandoned);
     }
 
     private CopyResult DestinationChanged(Entry entry, ITempFile temp, string tempPath, UInt128 tempId, long attemptId)
     {
-        Abandon(temp, tempPath, tempId, attemptId);
-        _journal.SetEntryState(entry.Id, EntryState.Pending);
+        Abandon(temp, tempPath, tempId);
+        _journal.Atomically(() =>
+        {
+            _journal.SetEntryState(entry.Id, EntryState.Pending);
+            _journal.SetPhase(attemptId, AttemptPhase.Abandoned);
+        });
         return new CopyResult(CopyOutcome.DestinationChanged, "The destination changed after the conflict decision.");
     }
 
-    private CopyResult VerificationFailed(Entry entry, FileIdentity? replaceTarget)
+    private CopyResult VerificationFailed(Entry entry, long attemptId, FileIdentity? replaceTarget)
     {
-        int failures = _journal.RecordVerifyFailure(entry.Id, replaceTarget);
-        if (failures >= 2) return Fail(entry, "Verification failed twice. The source was kept.");
-        _journal.SetEntryState(entry.Id, EntryState.Pending);
-        return new CopyResult(CopyOutcome.RetryNeeded, "Verification failed. The file will be copied again.");
+        CopyResult? result = null;
+        _journal.Atomically(() =>
+        {
+            int failures = _journal.RecordVerifyFailure(entry.Id, replaceTarget);
+            if (failures >= 2)
+            {
+                result = Fail(entry, "Verification failed twice. The source was kept.", attemptId);
+                return;
+            }
+            _journal.SetEntryState(entry.Id, EntryState.Pending);
+            _journal.SetPhase(attemptId, AttemptPhase.Abandoned);
+            result = new CopyResult(CopyOutcome.RetryNeeded, "Verification failed. The file will be copied again.");
+        });
+        return result!;
     }
 
-    private CopyResult Fail(Entry entry, string message)
+    /// Fails the entry; when an attempt is given, it is closed in the same transaction.
+    private CopyResult Fail(Entry entry, string message, long? attemptId = null)
     {
-        _journal.SetEntryState(entry.Id, EntryState.Failed, message);
+        _journal.Atomically(() =>
+        {
+            _journal.SetEntryState(entry.Id, EntryState.Failed, message);
+            if (attemptId is { } id) _journal.SetPhase(id, AttemptPhase.Abandoned);
+        });
         return new CopyResult(CopyOutcome.Failed, message);
     }
 }

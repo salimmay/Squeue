@@ -44,6 +44,7 @@ public sealed class Journal : IDisposable
         """;
 
     private readonly SqliteConnection _db;
+    private SqliteTransaction? _transaction;
 
     private Journal(SqliteConnection db) => _db = db;
 
@@ -58,6 +59,23 @@ public sealed class Journal : IDisposable
         journal.Exec("PRAGMA foreign_keys = ON;");
         journal.Exec(Schema);
         return journal;
+    }
+
+    /// Runs several journal writes as one transaction: all commit together or none do. Nested calls join the outer one.
+    public void Atomically(Action writes)
+    {
+        if (_transaction is not null) { writes(); return; }
+        _transaction = _db.BeginTransaction();
+        try
+        {
+            writes();
+            _transaction.Commit();
+        }
+        finally
+        {
+            _transaction.Dispose();
+            _transaction = null;
+        }
     }
 
     public long CreateJob(string? hashAlgorithm) =>
@@ -187,6 +205,7 @@ public sealed class Journal : IDisposable
     {
         var cmd = _db.CreateCommand();
         cmd.CommandText = sql;
+        cmd.Transaction = _transaction;
         foreach (var (name, value) in args) cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
         return cmd;
     }

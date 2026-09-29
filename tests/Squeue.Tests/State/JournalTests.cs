@@ -117,4 +117,56 @@ public class JournalTests
         Assert.Equal(2, journal.RecordVerifyFailure(id, null));
         Assert.Equal(Sample, journal.GetEntry(id).SeenDest);
     }
+
+    [Fact]
+    public void Atomically_commits_all_writes_together()
+    {
+        using var dir = new TestDir();
+        using var journal = Journal.Open(dir.PathOf("state.db"));
+        long id = journal.AddEntry(journal.CreateJob(null), "a", "b", 1, ConflictAction.Create, null);
+        long attempt = journal.BeginAttempt(id, "~tqaaaaaaaaaa.tmp", null);
+
+        journal.Atomically(() =>
+        {
+            journal.SetEntryState(id, EntryState.Failed, "x");
+            journal.SetPhase(attempt, AttemptPhase.Abandoned);
+        });
+
+        Assert.Equal((EntryState.Failed, "x"), (journal.GetEntry(id).State, journal.GetEntry(id).Error));
+        Assert.Empty(journal.OpenAttempts());
+    }
+
+    [Fact]
+    public void Atomically_rolls_back_everything_when_a_write_throws()
+    {
+        using var dir = new TestDir();
+        using var journal = Journal.Open(dir.PathOf("state.db"));
+        long id = journal.AddEntry(journal.CreateJob(null), "a", "b", 1, ConflictAction.Create, null);
+
+        Assert.Throws<InvalidOperationException>(() => journal.Atomically(() =>
+        {
+            journal.SetEntryState(id, EntryState.Failed, "x");
+            throw new InvalidOperationException();
+        }));
+
+        Assert.Equal(EntryState.Pending, journal.GetEntry(id).State);
+        journal.SetEntryState(id, EntryState.Active); // the journal is still usable
+        Assert.Equal(EntryState.Active, journal.GetEntry(id).State);
+    }
+
+    [Fact]
+    public void Nested_Atomically_joins_the_outer_transaction()
+    {
+        using var dir = new TestDir();
+        using var journal = Journal.Open(dir.PathOf("state.db"));
+        long id = journal.AddEntry(journal.CreateJob(null), "a", "b", 1, ConflictAction.Create, null);
+
+        Assert.Throws<InvalidOperationException>(() => journal.Atomically(() =>
+        {
+            journal.Atomically(() => journal.SetEntryState(id, EntryState.Failed, "x"));
+            throw new InvalidOperationException();
+        }));
+
+        Assert.Equal(EntryState.Pending, journal.GetEntry(id).State);
+    }
 }

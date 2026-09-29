@@ -44,9 +44,12 @@ public sealed class Reconciler(IFileSystem fs, Journal journal)
                     report.Resumed.Add(entry.Id);
                     return;
                 }
-                // Entry state first: it is safe to repeat while the attempt is still open; the reverse order could strand the entry in Active.
-                journal.SetEntryState(entry.Id, EntryState.Failed, "The destination changed after it was copied. The source was kept.");
-                journal.SetPhase(attempt.Id, AttemptPhase.Abandoned);
+                // The entry's new state and the attempt's close commit together.
+                journal.Atomically(() =>
+                {
+                    journal.SetEntryState(entry.Id, EntryState.Failed, "The destination changed after it was copied. The source was kept.");
+                    journal.SetPhase(attempt.Id, AttemptPhase.Abandoned);
+                });
                 report.Failed.Add(entry.Id);
                 return;
 
@@ -66,9 +69,12 @@ public sealed class Reconciler(IFileSystem fs, Journal journal)
                 }
 
                 RemoveTempIfOurs(attempt, tempPath, report);
-                // Entry state first: it is safe to repeat while the attempt is still open; the reverse order could strand the entry in Active.
-                journal.SetEntryState(entry.Id, EntryState.Pending);
-                journal.SetPhase(attempt.Id, AttemptPhase.Abandoned);
+                // The entry's new state and the attempt's close commit together.
+                journal.Atomically(() =>
+                {
+                    journal.SetEntryState(entry.Id, EntryState.Pending);
+                    journal.SetPhase(attempt.Id, AttemptPhase.Abandoned);
+                });
                 report.Reset.Add(entry.Id);
                 return;
         }
