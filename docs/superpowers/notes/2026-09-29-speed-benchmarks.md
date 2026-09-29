@@ -4,7 +4,7 @@ How to reproduce: see the header of `bench/Squeue.Bench/Program.cs`. Numbers dep
 
 ## Baseline (before plan 3), 2026-09-29, Intel Core i5-14600K, source E: (NVMe, NTFS) -> destination E: and C: (NVMe)
 
-Source: 1 x 1024 MB file plus 1000 x 300 KB files, read from memory (warm-up pass). Each number is the median of 3 runs (`--rounds 3`, engines rotated each round). E: -> E: is the same physical drive, so reads and writes share it. "Cache only" returns before data reaches the disk; Squeue and "+ flush" both wait for it.
+Source: 1 x 1024 MB file plus 1000 x 300 KB files, read from memory (warm-up pass). Each number is the median of 3 runs (`--rounds 3`, engines rotated each round). E: -> E: is the same physical drive, so reads and writes share it. "Cache only" returns before data reaches the disk; Squeue and "+ flush" both wait for it. The bench adds each file's journal entry in its own commit inside the timed loop (the app adds a whole job in one commit), so Squeue's small-file times here are slightly pessimistic.
 
 Destination E:
 
@@ -99,7 +99,9 @@ Before -> after, median seconds, defaults (percent is the change in time, negati
 | C: | Squeue, no verify | 4.7 | 3.8 | -19% |
 | C: | Squeue, verify | 11.1 | 9.2 | -17% |
 
-The Windows rows did not move (they are the control; +2%/+3% is noise). Squeue got about a fifth faster without verify and about a sixth faster with it. Squeue without verify now beats "Windows + flush each file" on the mixed set (3.2 s vs 5.5 s on E:, 3.8 s vs 6.1 s on C:). That is a fair comparison because both wait for the data to reach the disk.
+The Windows rows did not move (they are the control; +2%/+3% is noise). Squeue got about a fifth faster without verify and about a sixth faster with it. Squeue without verify now beats "Windows + flush each file" on the mixed set (3.2 s vs 5.5 s on E:, 3.8 s vs 6.1 s on C:). Both rows wait for file data to reach the disk, but they differ in method: the Windows row reopens each file to flush it, while Squeue flushes through the handle it already has. Additionally, the Squeue journal lives on C: (%TEMP%) during these runs, so in E:→E: runs its database syncs do not share the data drive with the copies. Squeue's durable copy time is in the same range as Windows plus a flush, not faster at equal durability.
+
+The measured gain (4.1 → 3.2 s on E: without verify) matches the 4 fewer database commits per file (about 0.9 ms each × 1000 files ≈ 0.9 s). The read-ahead engine is not shown to help in these runs: small files do not use it, the source was read from memory (warm cache), and the big file was not measured on its own before the change. Its benefit on a slow or cold source (an SD card, a USB drive) is not yet measured.
 
 Where Squeue is still slower:
 
@@ -107,7 +109,7 @@ Where Squeue is still slower:
 - On the big file alone, Squeue is slower than Windows even with flushing: 0.7 s (no verify) and 0.9 s (verify) against 0.5 s for "Windows + flush". Against cache-only Windows (0.2 s) the gap is larger, but that engine does not wait for the disk and is not a like-for-like comparison.
 - All Squeue rows are far behind Windows "cache only", which returns before data reaches the disk.
 
-Small files versus the big file: the 1000 small files dominate the total (2.6 s of the 3.2 s no-verify run; 7.5 s of 8.6 s with verify). Squeue beats "Windows + flush" on the small files (2.6 s vs 4.9 s) and loses on the big file (0.7 s vs 0.5 s). Verification costs little on the big file (+0.2 s) and a lot on the small files (+4.9 s, nearly triple the no-verify time), so the verify cost is per-file overhead, not hashing speed: 1000 extra open/read/close cycles and a fresh journal step per file.
+Small files versus the big file: the 1000 small files dominate the total (2.6 s of the 3.2 s no-verify run; 7.5 s of 8.6 s with verify). Squeue beats "Windows + flush" on the small files (2.6 s vs 4.9 s) and loses on the big file (0.7 s vs 0.5 s). Verification costs little on the big file (+0.2 s) and a lot on the small files (+4.9 s, nearly triple the no-verify time). Verification adds no journal commits (a verified new file takes the same 5); per file it adds opening the new copy uncached, reading it back, and closing it. The ~4.9 ms per small file is far more than that read should cost on NVMe; a likely cause (unconfirmed) is antivirus scanning a just-written file when it is first opened for reading. The same cost appears in the "Windows + flush" row, which also reopens each file. Suggested check: rerun the small-files set with a Windows Defender exclusion on the destination.
 
 Depth and chunk size: neither changed anything measurable. `--depth 2` gave 3.2 s / 8.6 s, the same as depth 4; `--chunk-mb 8` gave 3.3 s / 8.7 s against 3.2 s / 8.6 s, within run-to-run spread (about 0.2 s). The defaults stay.
 
