@@ -289,4 +289,40 @@ public class ViewModelTests
         Assert.Equal(new[] { false, true, true }, main.Drives.Select(d => d.IsBusy));
         Assert.Equal("EOS_DIGITAL (E:)", main.Drives[1].Name);
     }
+
+    [Fact]
+    public void A_verifying_job_is_a_live_card()
+    {
+        var queue = new FakeJobQueue();
+        var main = NewMain(queue);
+
+        queue.Raise(FakeJobQueue.Snapshot(state: JobState.Verifying));
+
+        var card = Assert.Single(main.Jobs);
+        Assert.Equal("Verifying · 10 MB/s", card.Status);
+        Assert.Equal((true, true, true), (card.IsRunning, card.CanPause, card.CanCancel));
+        Assert.NotEqual("", card.TimeLeft);
+    }
+
+    [Fact]
+    public void A_waiting_job_says_what_it_waits_for()
+    {
+        var queue = new FakeJobQueue();
+        var main = NewMain(queue);
+
+        queue.Raise(FakeJobQueue.Snapshot(state: JobState.Queued, done: 0, speed: 0) with { WaitingFor = "“DCIM” is using the same drive" });
+
+        Assert.Equal("Waiting · “DCIM” is using the same drive", main.Jobs[0].Status);
+    }
+
+    [Fact]
+    public void While_verifying_only_the_destination_drive_is_busy()
+    {
+        var queue = new FakeJobQueue();
+        var main = NewMain(queue, new(@"E:\", "Card (E:)"), new(@"F:\", "Backup (F:)"));
+
+        queue.Raise(FakeJobQueue.Snapshot(state: JobState.Verifying));
+
+        Assert.Equal(new[] { false, true }, main.Drives.Select(d => d.IsBusy));
+    }
 }

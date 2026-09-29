@@ -37,14 +37,14 @@ public sealed partial class JobCardViewModel(long id, IJobQueue queue, Action<Jo
         Fraction = s.Fraction;
         Percent = $"{(s.State == JobState.Done ? Math.Round(s.Fraction * 100) : Math.Floor(s.Fraction * 100)):0}%";
         State = s.State;
-        IsRunning = s.State == JobState.Running;
-        CanPause = s.State is JobState.Running or JobState.Queued;
+        IsRunning = s.State is JobState.Running or JobState.Verifying;
+        CanPause = s.State is JobState.Running or JobState.Verifying or JobState.Queued;
         CanResume = s.State == JobState.Paused;
-        CanCancel = s.State is JobState.Queued or JobState.Running or JobState.Paused;
+        CanCancel = s.State is JobState.Queued or JobState.Running or JobState.Verifying or JobState.Paused;
         CanDismiss = s.State is JobState.Done or JobState.Cancelled;
         Status = StatusText(s);
         Detail = (s.State == JobState.Done && s.FailedFiles > 0) || s.State == JobState.Paused ? s.LastError ?? "" : "";
-        TimeLeft = s.State == JobState.Running
+        TimeLeft = s.State is JobState.Running or JobState.Verifying
             ? Format.TimeLeftFor(s.TotalBytes - s.DoneBytes, s.BytesPerSecond)
             : "";
     }
@@ -52,7 +52,10 @@ public sealed partial class JobCardViewModel(long id, IJobQueue queue, Action<Jo
     public static string StatusText(JobSnapshot s) => s.State switch
     {
         JobState.Running => s.BytesPerSecond > 0 ? $"Copying · {Format.Speed(s.BytesPerSecond)}" : "Copying",
-        JobState.Queued => $"Waiting · {Format.Count(s.TotalFiles, "file")}, {Format.Bytes(s.TotalBytes)}",
+        JobState.Verifying => s.BytesPerSecond > 0 ? $"Verifying · {Format.Speed(s.BytesPerSecond)}" : "Verifying",
+        JobState.Queued => s.WaitingFor is { Length: > 0 } why
+            ? $"Waiting · {why}"
+            : $"Waiting · {Format.Count(s.TotalFiles, "file")}, {Format.Bytes(s.TotalBytes)}",
         JobState.Paused => s.LastError is { Length: > 0 } reason ? $"Paused · {reason}" : "Paused",
         JobState.Cancelled => "Cancelled",
         _ => s.FailedFiles > 0 ? $"Done · {s.FailedFiles} failed" : "Done",

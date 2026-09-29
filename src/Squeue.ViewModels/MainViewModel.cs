@@ -85,7 +85,7 @@ public sealed partial class MainViewModel : ObservableObject
     {
         var active = _latest.Values.Where(IsActive).ToList();
         long left = active.Sum(s => s.TotalBytes - s.DoneBytes);
-        double speed = active.Where(s => s.State == JobState.Running).Sum(s => s.BytesPerSecond);
+        double speed = active.Where(s => s.State is JobState.Running or JobState.Verifying).Sum(s => s.BytesPerSecond);
         string eta = Format.TimeLeftFor(left, speed);
         Subtitle = active.Count == 0
             ? "Nothing to copy. Drop files or folders here."
@@ -98,14 +98,18 @@ public sealed partial class MainViewModel : ObservableObject
     private void UpdateBusyDrives()
     {
         var busyRoots = _latest.Values
-            .Where(s => s.State == JobState.Running)
-            .SelectMany(s => new[] { Path.GetPathRoot(s.Source), Path.GetPathRoot(s.DestRoot) })
+            .SelectMany(s => s.State switch
+            {
+                JobState.Running => new[] { Path.GetPathRoot(s.Source), Path.GetPathRoot(s.DestRoot) },
+                JobState.Verifying => new[] { Path.GetPathRoot(s.DestRoot) }, // the source drive is free again
+                _ => [],
+            })
             .Where(root => !string.IsNullOrEmpty(root))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var drive in Drives) drive.IsBusy = busyRoots.Contains(drive.Root);
     }
 
-    private static bool IsActive(JobSnapshot s) => s.State is JobState.Queued or JobState.Running or JobState.Paused;
+    private static bool IsActive(JobSnapshot s) => s.State is JobState.Queued or JobState.Running or JobState.Verifying or JobState.Paused;
 
     /// Unfinished jobs, jobs that finished with failures, and cancelled jobs stay visible until dismissed.
     private static bool NeedsCard(JobSnapshot s) =>
