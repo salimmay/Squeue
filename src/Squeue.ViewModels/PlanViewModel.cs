@@ -46,12 +46,21 @@ public sealed partial class PlanViewModel(JobPlan plan, Action<PlanViewModel> st
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(Policy))]
+    [NotifyPropertyChangedFor(nameof(CanChangeVerify))]
     private bool _overwrite;
 
     [ObservableProperty]
     private bool _verify = true;
 
     public OverwritePolicy Policy => Overwrite ? OverwritePolicy.Replace : OverwritePolicy.Skip;
+
+    /// Replacing a file is only allowed with a verified copy, so verification can't be turned off then.
+    public bool CanChangeVerify => !Overwrite;
+
+    partial void OnOverwriteChanged(bool value)
+    {
+        if (value) Verify = true;
+    }
 
     [RelayCommand]
     private void Start() => start(this);

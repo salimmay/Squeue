@@ -95,6 +95,17 @@ public class JobPlannerTests
     }
 
     [Fact]
+    public void Copying_a_folder_into_its_own_parent_is_refused()
+    {
+        using var dir = new TestDir();
+        dir.Write(@"Backup\DCIM\a.jpg", new byte[1]);
+
+        var ex = Assert.Throws<ArgumentException>(() => JobPlanner.Plan(_fs, [dir.PathOf(@"Backup\DCIM")], dir.PathOf("Backup")));
+
+        Assert.StartsWith($"'{dir.PathOf(@"Backup\DCIM")}' is already there.", ex.Message);
+    }
+
+    [Fact]
     public void A_missing_source_is_refused()
     {
         using var dir = new TestDir();

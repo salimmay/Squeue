@@ -1,5 +1,6 @@
 using System.IO;
 using System.Windows;
+using System.Windows.Interop;
 using Microsoft.Win32;
 using Squeue.Core.FileSystem;
 using Squeue.Core.Jobs;
@@ -17,6 +18,21 @@ public partial class MainWindow : Window
         InitializeComponent();
         _viewModel = viewModel;
         DataContext = viewModel;
+    }
+
+    private const int WM_DEVICECHANGE = 0x0219;
+
+    /// Refreshes the drive pills when a drive or card is added or removed.
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(OnWindowMessage);
+    }
+
+    private IntPtr OnWindowMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == WM_DEVICECHANGE) Dispatcher.BeginInvoke(() => _viewModel.RefreshDrivesCommand.Execute(null));
+        return IntPtr.Zero;
     }
 
     private void OnDragOver(object sender, DragEventArgs e)

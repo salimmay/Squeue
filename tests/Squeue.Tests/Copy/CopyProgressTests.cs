@@ -84,6 +84,25 @@ public class CopyProgressTests
     }
 
     [Fact]
+    public void Cancelling_while_checking_a_replacement_keeps_the_existing_file()
+    {
+        using var s = new CopyScenario();
+        s.WriteSource(TestDir.RandomBytes(2 * Chunk));
+        s.WriteDest([7, 7, 7]);
+        long id = s.AddEntry(action: ConflictAction.Replace, seenDest: _fs.TryGetIdentity(s.Dest));
+        using var stop = new CancellationTokenSource();
+        var copier = new FileCopier(_fs, s.Journal, Options);
+
+        var result = copier.CopyEntry(id, new Recorder(p => { if (p.Stage == CopyStage.Verifying) stop.Cancel(); }), stop.Token);
+
+        Assert.Equal(CopyOutcome.Cancelled, result.Outcome);
+        Assert.Equal(new byte[] { 7, 7, 7 }, File.ReadAllBytes(s.Dest));
+        Assert.Empty(s.TempFiles());
+        Assert.Equal(EntryState.Pending, s.Journal.GetEntry(id).State);
+        Assert.Empty(s.Journal.OpenAttempts());
+    }
+
+    [Fact]
     public void An_already_cancelled_token_changes_nothing()
     {
         using var s = new CopyScenario();

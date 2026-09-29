@@ -65,6 +65,9 @@ public static class JobPlanner
             if (IsSameOrInside(dest, source)) throw new ArgumentException($"Can't copy '{source}' into itself.", nameof(destRoot));
 
             string target = Path.Combine(dest, FolderName(source));
+            // E:\Backup\DCIM to E:\Backup would copy every file onto itself.
+            if (string.Equals(target, source, StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException($"'{source}' is already there.", nameof(destRoot));
             WalkFolder(source, target, fs, files, skipped, ref links);
         }
 

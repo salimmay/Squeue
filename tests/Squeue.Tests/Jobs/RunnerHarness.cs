@@ -56,6 +56,16 @@ public sealed class RunnerHarness : IDisposable
         }
     }
 
+    /// Simulates closing and relaunching the app: disposes the runner and starts a new one on the same journal.
+    /// Snapshots from before the restart are forgotten.
+    public void Restart()
+    {
+        Runner.Dispose();
+        lock (_lock) _events.Clear();
+        Runner = NewRunner();
+        Runner.Start();
+    }
+
     public void Dispose()
     {
         Runner.Dispose();

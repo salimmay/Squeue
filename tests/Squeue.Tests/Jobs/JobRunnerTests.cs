@@ -320,6 +320,54 @@ public class JobRunnerTests
     }
 
     [Fact]
+    public void Two_jobs_run_in_order()
+    {
+        using var h = new RunnerHarness();
+        var first = PlanCard(h, ("a.bin", TestDir.RandomBytes(300_000, 1)));
+        var b = TestDir.RandomBytes(1000, 2);
+        h.Dir.Write(Path.Combine("card2", "b.bin"), b);
+        var second = JobPlanner.Plan(h.Fs, [h.Dir.PathOf("card2")], h.Dir.PathOf("backup"));
+
+        h.Runner.Enqueue(first, OverwritePolicy.Replace, verify: true);
+        h.Runner.Enqueue(second, OverwritePolicy.Replace, verify: true);
+        h.Runner.Start();
+        h.WaitFor(s => s.Name == "card2" && s.State == JobState.Done);
+
+        var events = h.Events.ToList();
+        int firstDone = events.FindIndex(s => s.Name == "card" && s.State == JobState.Done);
+        int secondStarts = events.FindIndex(s => s.Name == "card2" && s.State == JobState.Running);
+        Assert.InRange(firstDone, 0, secondStarts - 1);
+        Assert.DoesNotContain(events.Skip(secondStarts), s => s.Name == "card" && s.State == JobState.Running);
+        Assert.Equal(b, File.ReadAllBytes(h.Dir.PathOf(@"backup\card2\b.bin")));
+    }
+
+    [Fact]
+    public void A_paused_job_stays_paused_after_a_restart()
+    {
+        using var h = new RunnerHarness();
+        var plan = PlanCard(h, ("big.bin", TestDir.RandomBytes(8 * 1024 * 1024)));
+        int paused = 0;
+        h.OnEvent = s =>
+        {
+            if (s.State == JobState.Running && s.DoneBytes > 0 && Interlocked.Exchange(ref paused, 1) == 0) h.Runner.Pause(s.Id);
+        };
+        h.Runner.Start();
+        h.Runner.Enqueue(plan, OverwritePolicy.Replace, verify: true);
+        var p = h.WaitFor(s => s.State == JobState.Paused);
+        h.OnEvent = null;
+
+        h.Restart();
+        h.Dir.Write(Path.Combine("card2", "x.bin"), TestDir.RandomBytes(100));
+        h.Runner.Enqueue(JobPlanner.Plan(h.Fs, [h.Dir.PathOf("card2")], h.Dir.PathOf("backup")), OverwritePolicy.Replace, verify: true);
+        h.WaitFor(s => s.Name == "card2" && s.State == JobState.Done);
+
+        Assert.Equal(JobState.Paused, h.WaitFor(s => s.Id == p.Id).State);
+        Assert.DoesNotContain(h.Events, s => s.Id == p.Id && s.State != JobState.Paused);
+        Assert.False(File.Exists(h.Dir.PathOf(@"backup\card\big.bin")));
+        Assert.Empty(TempFilesUnder(h.Dir.PathOf("backup")));
+    }
+
+    [Fact]
     public void A_subscriber_that_throws_does_not_stop_the_runner()
     {
         using var h = new RunnerHarness();

@@ -169,6 +169,23 @@ public class ViewModelTests
     }
 
     [Fact]
+    public void Replacing_files_turns_verification_on_and_locks_it()
+    {
+        var vm = new PlanViewModel(new JobPlan("DCIM", @"E:\DCIM", @"F:\Backup", []), _ => { }, _ => { });
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+        vm.Verify = false;
+        Assert.True(vm.CanChangeVerify);
+
+        vm.Overwrite = true;
+
+        Assert.Equal((true, false), (vm.Verify, vm.CanChangeVerify));
+        Assert.Contains("CanChangeVerify", raised);
+        vm.Overwrite = false;
+        Assert.Equal((true, true), (vm.Verify, vm.CanChangeVerify));
+    }
+
+    [Fact]
     public void The_plan_summary_warns_about_unreadable_folders()
     {
         var file = new PlannedFile(@"E:\DCIM\a", @"F:\Backup\DCIM\a", 10, null);
