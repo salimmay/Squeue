@@ -17,6 +17,7 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly Dictionary<long, JobCardViewModel> _cards = [];
     private readonly Dictionary<long, JobSnapshot> _latest = [];
     private readonly HashSet<long> _dismissed = []; // cards the user closed; later snapshots don't bring them back
+    private readonly HashSet<long> _seenActive = []; // jobs this session has seen queued, running or paused
 
     /// <param name="post">Runs an action on the UI thread; the queue raises events on its own thread.</param>
     public MainViewModel(IJobQueue queue, IDriveSource drives, Action<Action> post, ISettingsStore settings,
@@ -27,7 +28,11 @@ public sealed partial class MainViewModel : ObservableObject
         _openFolder = openFolder;
         _now = now ?? (() => DateTime.Now);
         Settings = new SettingsViewModel(settings);
-        Jobs.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IsEmpty));
+        Jobs.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(IsEmpty));
+            OnPropertyChanged(nameof(HasJobs));
+        };
         queue.JobChanged += snapshot => post(() => Apply(snapshot));
         queue.FailedFilesLoaded += (id, files) => post(() =>
         {
@@ -41,8 +46,13 @@ public sealed partial class MainViewModel : ObservableObject
     public ObservableCollection<JobCardViewModel> Jobs { get; } = [];
     public ObservableCollection<HistoryItemViewModel> History { get; } = [];
 
+    /// Raised when the window should show the Queue tab, for example after "Retry failed".
+    public event Action? ShowQueueRequested;
+
     /// Raised when the last active job ends.
     public event Action? QueueFinished;
+
+    public bool HasJobs => Jobs.Count > 0;
 
     /// No cards and no pending plan: the queue shows its empty state.
     public bool IsEmpty => Jobs.Count == 0 && PendingPlan is null;
@@ -63,6 +73,11 @@ public sealed partial class MainViewModel : ObservableObject
     public void Apply(JobSnapshot snapshot)
     {
         _latest[snapshot.Id] = snapshot;
+        if (IsActive(snapshot))
+        {
+            _seenActive.Add(snapshot.Id);
+            _dismissed.Remove(snapshot.Id); // a retried job gets its card back
+        }
         if (NeedsCard(snapshot) && !_dismissed.Contains(snapshot.Id))
         {
             if (!_cards.TryGetValue(snapshot.Id, out var card))
@@ -91,7 +106,8 @@ public sealed partial class MainViewModel : ObservableObject
     public void ProposePlan(JobPlan plan) => PendingPlan = new PlanViewModel(plan, StartPlan, _ => PendingPlan = null)
     {
         Verify = Settings.CheckAfterCopying,
-        Overwrite = Settings.ExistingFiles == ExistingFiles.Replace, // replacing forces Verify on
+        // Replacing forces Verify on, so only ask for it when there is something to replace.
+        Overwrite = Settings.ExistingFiles == ExistingFiles.Replace && plan.ExistingCount > 0,
     };
 
     private void UpdateHistory(JobSnapshot snapshot)
@@ -100,7 +116,7 @@ public sealed partial class MainViewModel : ObservableObject
         {
             if (!_history.TryGetValue(snapshot.Id, out var item))
             {
-                item = new HistoryItemViewModel(snapshot.Id, _queue, _openFolder, _now);
+                item = new HistoryItemViewModel(snapshot.Id, _queue, _openFolder, _now, () => ShowQueueRequested?.Invoke());
                 _history[snapshot.Id] = item;
                 item.Update(snapshot);
                 int index = 0;
@@ -169,6 +185,7 @@ public sealed partial class MainViewModel : ObservableObject
     private static bool IsActive(JobSnapshot s) => s.State is JobState.Queued or JobState.Running or JobState.Verifying or JobState.Paused;
 
     /// Unfinished jobs, jobs that finished with failures, and cancelled jobs stay visible until dismissed.
-    private static bool NeedsCard(JobSnapshot s) =>
-        IsActive(s) || s.State == JobState.Cancelled || (s.State == JobState.Done && s.FailedFiles > 0);
+    /// A job first seen already finished (history loaded at startup) goes to History only.
+    private bool NeedsCard(JobSnapshot s) =>
+        IsActive(s) || (_seenActive.Contains(s.Id) && (s.State == JobState.Cancelled || (s.State == JobState.Done && s.FailedFiles > 0)));
 }

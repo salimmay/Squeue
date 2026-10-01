@@ -35,12 +35,24 @@ public sealed class JsonSettingsStore(string path) : ISettingsStore
         try
         {
             if (!File.Exists(path)) return new AppSettings();
-            return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path), Options) ?? new AppSettings();
+            return Clamp(JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path), Options) ?? new AppSettings());
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or NotSupportedException)
         {
             return new AppSettings();
         }
+    }
+
+    /// Values outside what the settings page offers go back to their defaults.
+    private static AppSettings Clamp(AppSettings loaded)
+    {
+        var defaults = new AppSettings();
+        return loaded with
+        {
+            ExistingFiles = Enum.IsDefined(loaded.ExistingFiles) ? loaded.ExistingFiles : defaults.ExistingFiles,
+            WhenDone = Enum.IsDefined(loaded.WhenDone) ? loaded.WhenDone : defaults.WhenDone,
+            HistoryDays = loaded.HistoryDays is 0 or 30 or 90 ? loaded.HistoryDays : defaults.HistoryDays,
+        };
     }
 
     public void Save(AppSettings settings)

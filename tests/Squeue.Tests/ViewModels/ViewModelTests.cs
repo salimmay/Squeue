@@ -60,6 +60,7 @@ public class ViewModelTests
         var failed = FakeJobQueue.Snapshot(id: 3, state: JobState.Done, done: 100 * 1048576, failed: 2, created: Now.ToUniversalTime())
             with { LastError = "boom" };
 
+        queue.Raise(FakeJobQueue.Snapshot(id: 3)); // seen running in this session
         queue.Raise(failed);
 
         var card = Assert.Single(main.Jobs);
@@ -299,7 +300,7 @@ public class ViewModelTests
         queue.Raise(FakeJobQueue.Snapshot(state: JobState.Verifying));
 
         var card = Assert.Single(main.Jobs);
-        Assert.Equal("Verifying · 10 MB/s", card.Status);
+        Assert.Equal("Checking · 10 MB/s", card.Status);
         Assert.Equal((true, true, true), (card.IsRunning, card.CanPause, card.CanCancel));
         Assert.NotEqual("", card.TimeLeft);
     }
@@ -326,19 +327,72 @@ public class ViewModelTests
         Assert.Equal(new[] { false, true }, main.Drives.Select(d => d.IsBusy));
     }
 
+    private static JobPlan WithExisting() => new("DCIM", @"E:\DCIM", @"F:\Backup",
+        [new PlannedFile(@"E:\DCIM", @"F:\Backup\DCIM", 10, new Squeue.Core.FileSystem.FileIdentity(1, (UInt128)2, 3, 4, 5, 6, 0))]);
+
     [Fact]
     public void The_plan_starts_from_the_settings()
     {
         var replace = new MemorySettings(new AppSettings { ExistingFiles = ExistingFiles.Replace, CheckAfterCopying = false });
         var main = new MainViewModel(new FakeJobQueue(), new FakeDrives(), a => a(), replace, now: () => Now);
         main.ProposePlan(new JobPlan("DCIM", @"E:\DCIM", @"F:\Backup", []));
+        Assert.False(main.PendingPlan!.Overwrite); // nothing exists there, so nothing to replace
+        Assert.False(main.PendingPlan.Verify);
+
+        main.ProposePlan(WithExisting());
         Assert.True(main.PendingPlan!.Overwrite);
         Assert.True(main.PendingPlan.Verify);
 
         var skip = new MainViewModel(new FakeJobQueue(), new FakeDrives(), a => a(), new MemorySettings(new AppSettings { CheckAfterCopying = false }), now: () => Now);
-        skip.ProposePlan(new JobPlan("DCIM", @"E:\DCIM", @"F:\Backup", []));
+        skip.ProposePlan(WithExisting());
         Assert.False(skip.PendingPlan!.Overwrite);
         Assert.False(skip.PendingPlan.Verify);
+    }
+
+    [Fact]
+    public void A_dismissed_job_gets_its_card_back_when_it_is_retried()
+    {
+        var queue = new FakeJobQueue();
+        var main = NewMain(queue);
+        queue.Raise(FakeJobQueue.Snapshot(id: 5));
+        queue.Raise(FakeJobQueue.Snapshot(id: 5, state: JobState.Done, done: 100 * 1048576, failed: 1));
+        main.Jobs[0].DismissCommand.Execute(null);
+        Assert.Empty(main.Jobs);
+
+        queue.Raise(FakeJobQueue.Snapshot(id: 5, state: JobState.Queued, done: 0, speed: 0));
+
+        Assert.Equal(5, Assert.Single(main.Jobs).Id);
+        Assert.True(main.HasJobs);
+    }
+
+    [Fact]
+    public void A_job_first_seen_finished_goes_to_history_only()
+    {
+        var queue = new FakeJobQueue();
+        var main = NewMain(queue);
+
+        queue.Raise(FakeJobQueue.Snapshot(id: 6, state: JobState.Done, done: 100 * 1048576, failed: 2, finished: Now.ToUniversalTime(), created: Now.ToUniversalTime()));
+        queue.Raise(FakeJobQueue.Snapshot(id: 7, state: JobState.Cancelled, finished: Now.ToUniversalTime(), created: Now.ToUniversalTime()));
+
+        Assert.Empty(main.Jobs);
+        Assert.True(main.IsEmpty);
+        Assert.False(main.HasJobs);
+        Assert.Equal(2, main.History.Count);
+        Assert.True(main.History.Single(h => h.Id == 6).NeedsAttention);
+    }
+
+    [Fact]
+    public void Finished_jobs_published_at_startup_do_not_fire_QueueFinished()
+    {
+        var queue = new FakeJobQueue();
+        var main = NewMain(queue);
+        int fired = 0;
+        main.QueueFinished += () => fired++;
+
+        queue.Raise(FakeJobQueue.Snapshot(id: 1, state: JobState.Done, done: 100 * 1048576));
+        queue.Raise(FakeJobQueue.Snapshot(id: 2, state: JobState.Cancelled));
+
+        Assert.Equal(0, fired);
     }
 
     [Fact]

@@ -8,10 +8,12 @@ using Squeue.Core.State;
 namespace Squeue.ViewModels;
 
 /// One finished or cancelled job in the History tab.
-public sealed partial class HistoryItemViewModel(long id, IJobQueue queue, Action<string>? openFolder, Func<DateTime> now) : ObservableObject
+public sealed partial class HistoryItemViewModel(long id, IJobQueue queue, Action<string>? openFolder, Func<DateTime> now, Action? retried = null) : ObservableObject
 {
     private string _destRoot = "";
     private bool _failedFilesRequested;
+    private bool _failedFilesLoaded;
+    private const int MaxListedFiles = 500; // the most the queue returns
 
     public long Id { get; } = id;
 
@@ -27,6 +29,13 @@ public sealed partial class HistoryItemViewModel(long id, IJobQueue queue, Actio
     [ObservableProperty] private bool _showsFailedFiles;
 
     public ObservableCollection<FailedFile> FailedFiles { get; } = [];
+
+    /// Shown under the failed-files list: loading, empty, or truncated.
+    public string FailedFilesNote =>
+        !_failedFilesLoaded ? "Loading…"
+        : FailedFiles.Count == 0 ? "No failed files were recorded."
+        : FailedFiles.Count >= MaxListedFiles ? $"Showing the first {MaxListedFiles}."
+        : "";
 
     public void Update(JobSnapshot s)
     {
@@ -54,6 +63,8 @@ public sealed partial class HistoryItemViewModel(long id, IJobQueue queue, Actio
     {
         FailedFiles.Clear();
         foreach (var file in files) FailedFiles.Add(file);
+        _failedFilesLoaded = true;
+        OnPropertyChanged(nameof(FailedFilesNote));
     }
 
     private static string DayLabelFor(DateTime day, DateTime today) =>
@@ -62,7 +73,11 @@ public sealed partial class HistoryItemViewModel(long id, IJobQueue queue, Actio
         : day.ToString("d MMM yyyy", CultureInfo.InvariantCulture);
 
     [RelayCommand]
-    private void RetryFailed() => queue.RetryFailed(Id);
+    private void RetryFailed()
+    {
+        queue.RetryFailed(Id);
+        retried?.Invoke();
+    }
 
     [RelayCommand]
     private void ToggleFailedFiles()

@@ -55,7 +55,7 @@ public sealed partial class JobCardViewModel(long id, IJobQueue queue, Action<Jo
     public static string StatusText(JobSnapshot s) => s.State switch
     {
         JobState.Running => s.BytesPerSecond > 0 ? $"Copying · {Format.Speed(s.BytesPerSecond)}" : "Copying",
-        JobState.Verifying => s.BytesPerSecond > 0 ? $"Verifying · {Format.Speed(s.BytesPerSecond)}" : "Verifying",
+        JobState.Verifying => s.BytesPerSecond > 0 ? $"Checking · {Format.Speed(s.BytesPerSecond)}" : "Checking",
         JobState.Queued => s.WaitingFor is { Length: > 0 } why
             ? $"Waiting · {why}"
             : $"Waiting · {Format.Count(s.TotalFiles, "file")}, {Format.Bytes(s.TotalBytes)}",

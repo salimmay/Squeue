@@ -42,6 +42,7 @@ public class HistoryViewModelTests
         var queue = new FakeJobQueue();
         var main = NewMain(queue);
 
+        queue.Raise(FakeJobQueue.Snapshot()); // running in this session, so the failed job keeps a card
         queue.Raise(Finished(failed: 2) with { LastError = "Access denied" });
 
         var item = Assert.Single(main.History);
@@ -138,5 +139,42 @@ public class HistoryViewModelTests
         var item = Assert.Single(main.History);
         Assert.Equal("Cancelled", item.Result);
         Assert.False(item.CanRetry);
+    }
+
+    [Fact]
+    public void Retrying_asks_to_show_the_queue()
+    {
+        var queue = new FakeJobQueue();
+        var main = NewMain(queue);
+        int asked = 0;
+        main.ShowQueueRequested += () => asked++;
+        queue.Raise(Finished(id: 7, failed: 1));
+
+        main.History[0].RetryFailedCommand.Execute(null);
+
+        Assert.Equal(1, asked);
+    }
+
+    [Fact]
+    public void The_failed_files_note_follows_the_answer()
+    {
+        var queue = new FakeJobQueue();
+        var main = NewMain(queue);
+        queue.Raise(Finished(id: 7, failed: 1));
+        var item = main.History[0];
+        var changes = new List<string?>();
+        item.PropertyChanged += (_, e) => changes.Add(e.PropertyName);
+
+        Assert.Equal("Loading…", item.FailedFilesNote);
+
+        queue.RaiseFailedFiles(7, []);
+        Assert.Equal("No failed files were recorded.", item.FailedFilesNote);
+        Assert.Contains(nameof(HistoryItemViewModel.FailedFilesNote), changes);
+
+        queue.RaiseFailedFiles(7, [new FailedFile(@"E:.jpg", "Access denied")]);
+        Assert.Equal("", item.FailedFilesNote);
+
+        queue.RaiseFailedFiles(7, Enumerable.Range(0, 500).Select(i => new FailedFile($@"E:\{i}.jpg", "x")).ToList());
+        Assert.Equal("Showing the first 500.", item.FailedFilesNote);
     }
 }

@@ -64,4 +64,15 @@ public sealed class SettingsTests : IDisposable
 
         Assert.Equal(new AppSettings(), new JsonSettingsStore(FilePath).Load());
     }
+
+    [Fact]
+    public void Out_of_range_values_fall_back_to_defaults()
+    {
+        Directory.CreateDirectory(_folder);
+        File.WriteAllText(FilePath, "{ \"ExistingFiles\": 7, \"WhenDone\": 9, \"HistoryDays\": 45, \"CheckAfterCopying\": false }");
+
+        var loaded = new JsonSettingsStore(FilePath).Load();
+
+        Assert.Equal(new AppSettings { CheckAfterCopying = false }, loaded);
+    }
 }
