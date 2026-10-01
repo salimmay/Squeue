@@ -16,7 +16,13 @@ public sealed class Journal : IDisposable
           source     TEXT,
           dest_root  TEXT,
           state      TEXT NOT NULL DEFAULT 'Queued',
-          created_at INTEGER NOT NULL
+          created_at INTEGER NOT NULL,
+          total_files  INTEGER,
+          done_files   INTEGER,
+          failed_files INTEGER,
+          total_bytes  INTEGER,
+          last_error   TEXT,
+          finished_at  INTEGER
         );
         CREATE TABLE IF NOT EXISTS entries (
           id              INTEGER PRIMARY KEY,
@@ -99,8 +105,77 @@ public sealed class Journal : IDisposable
             """,
             ("$hash", hashAlgorithm), ("$name", name), ("$source", source), ("$dest", destRoot), ("$now", Now()));
 
-    public void SetJobState(long jobId, JobState state) =>
-        Exec("UPDATE jobs SET state = $s WHERE id = $id", ("$s", state.ToString()), ("$id", jobId));
+    /// A job that is not finished has no summary or finish time, so moving one back to a live state clears them.
+    public void SetJobState(long jobId, JobState state)
+    {
+        if (state is JobState.Done or JobState.Cancelled)
+            Exec("UPDATE jobs SET state = $s WHERE id = $id", ("$s", state.ToString()), ("$id", jobId));
+        else
+            Exec("""
+                UPDATE jobs
+                SET state = $s, finished_at = NULL, total_files = NULL, done_files = NULL,
+                    failed_files = NULL, total_bytes = NULL, last_error = NULL
+                WHERE id = $id
+                """, ("$s", state.ToString()), ("$id", jobId));
+    }
+
+    public void FinishJob(long jobId, JobState state, JobSummary summary) =>
+        Exec("""
+            UPDATE jobs
+            SET state = $s, total_files = $total, done_files = $done, failed_files = $failed,
+                total_bytes = $bytes, last_error = $error, finished_at = $now
+            WHERE id = $id
+            """, ("$s", state.ToString()), ("$total", summary.TotalFiles), ("$done", summary.DoneFiles),
+            ("$failed", summary.FailedFiles), ("$bytes", summary.TotalBytes), ("$error", summary.LastError),
+            ("$now", Now()), ("$id", jobId));
+
+    public IReadOnlyList<EntryRow> FailedEntriesOf(long jobId, int limit)
+    {
+        using var cmd = Command("""
+            SELECT id, src_path, planned_size, state, error FROM entries
+            WHERE job_id = $job AND state = 'Failed' ORDER BY id LIMIT $limit
+            """, ("$job", jobId), ("$limit", limit));
+        using var r = cmd.ExecuteReader();
+        var rows = new List<EntryRow>();
+        while (r.Read())
+            rows.Add(new EntryRow(r.GetInt64(0), r.GetString(1), r.GetInt64(2), Enum.Parse<EntryState>(r.GetString(3)), Text(r, 4)));
+        return rows;
+    }
+
+    public int RetryFailedEntries(long jobId)
+    {
+        using var cmd = Command(
+            "UPDATE entries SET state = 'Pending', error = NULL, verify_failures = 0 WHERE job_id = $job AND state = 'Failed'",
+            ("$job", jobId));
+        int count = cmd.ExecuteNonQuery();
+        if (_transaction is null) CommitCount++;
+        return count;
+    }
+
+    /// Deletes finished jobs older than the cutoff (FILETIME UTC) with their entries and attempts.
+    /// A job with an open attempt is kept: recovery still has to settle it.
+    public int PruneFinishedBefore(long filetimeUtc)
+    {
+        int removed = 0;
+        Atomically(() =>
+        {
+            const string old = """
+                SELECT id FROM jobs
+                WHERE state IN ('Done', 'Cancelled') AND finished_at < $cutoff
+                  AND NOT EXISTS (
+                    SELECT 1 FROM attempts a JOIN entries e ON e.id = a.entry_id
+                    WHERE e.job_id = jobs.id AND a.phase NOT IN ('Finished', 'Abandoned'))
+                """;
+            using (var cmd = Command($"DELETE FROM attempts WHERE entry_id IN (SELECT id FROM entries WHERE job_id IN ({old}))",
+                       ("$cutoff", filetimeUtc)))
+                cmd.ExecuteNonQuery();
+            using (var cmd = Command($"DELETE FROM entries WHERE job_id IN ({old})", ("$cutoff", filetimeUtc)))
+                cmd.ExecuteNonQuery();
+            using (var cmd = Command($"DELETE FROM jobs WHERE id IN ({old})", ("$cutoff", filetimeUtc)))
+                removed = cmd.ExecuteNonQuery();
+        });
+        return removed;
+    }
 
     public JobRow GetJob(long jobId) =>
         ReadJobs("WHERE id = $id", ("$id", jobId)).SingleOrDefault() ?? throw new KeyNotFoundException($"No job {jobId}.");
@@ -206,13 +281,20 @@ public sealed class Journal : IDisposable
 
     private List<JobRow> ReadJobs(string where, params (string Name, object? Value)[] args)
     {
-        using var cmd = Command("SELECT id, name, source, dest_root, state, hash_algo, created_at FROM jobs " + where, args);
+        using var cmd = Command("""
+            SELECT id, name, source, dest_root, state, hash_algo, created_at,
+                   total_files, done_files, failed_files, total_bytes, last_error, finished_at FROM jobs
+            """ + " " + where, args);
         using var r = cmd.ExecuteReader();
         var rows = new List<JobRow>();
         while (r.Read())
         {
+            var summary = r.IsDBNull(7)
+                ? null
+                : new JobSummary(r.GetInt32(7), r.GetInt32(8), r.GetInt32(9), r.GetInt64(10), Text(r, 11));
             rows.Add(new JobRow(r.GetInt64(0), Text(r, 1), Text(r, 2), Text(r, 3),
-                Enum.Parse<JobState>(r.GetString(4)), Text(r, 5), r.GetInt64(6)));
+                Enum.Parse<JobState>(r.GetString(4)), Text(r, 5), r.GetInt64(6),
+                summary, r.IsDBNull(12) ? null : r.GetInt64(12)));
         }
         return rows;
     }
@@ -230,6 +312,12 @@ public sealed class Journal : IDisposable
         if (!columns.Contains("source")) Exec("ALTER TABLE jobs ADD COLUMN source TEXT");
         if (!columns.Contains("dest_root")) Exec("ALTER TABLE jobs ADD COLUMN dest_root TEXT");
         if (!columns.Contains("state")) Exec("ALTER TABLE jobs ADD COLUMN state TEXT NOT NULL DEFAULT 'Queued'");
+        foreach (var (column, type) in new[]
+                 {
+                     ("total_files", "INTEGER"), ("done_files", "INTEGER"), ("failed_files", "INTEGER"),
+                     ("total_bytes", "INTEGER"), ("last_error", "TEXT"), ("finished_at", "INTEGER"),
+                 })
+            if (!columns.Contains(column)) Exec($"ALTER TABLE jobs ADD COLUMN {column} {type}");
     }
 
     private List<Attempt> ReadAttempts(string where, params (string Name, object? Value)[] args)

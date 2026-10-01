@@ -18,7 +18,11 @@ public sealed record JobRow(
     string? DestRoot,
     JobState State,
     string? HashAlgorithm,
-    long CreatedAt);
+    long CreatedAt,
+    JobSummary? Summary = null,
+    long? FinishedAt = null);
+
+public sealed record JobSummary(int TotalFiles, int DoneFiles, int FailedFiles, long TotalBytes, string? LastError);
 
 public sealed record EntryRow(long Id, string SrcPath, long PlannedSize, EntryState State, string? Error);
 
