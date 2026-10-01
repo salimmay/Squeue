@@ -1,5 +1,7 @@
 using System.IO;
+using System.Globalization;
 using System.Windows;
+using System.Windows.Data;
 using System.Windows.Interop;
 using Microsoft.Win32;
 using Squeue.Core.FileSystem;
@@ -18,6 +20,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         _viewModel = viewModel;
         DataContext = viewModel;
+        ((CollectionViewSource)Resources["HistoryView"]).Source = viewModel.History;
     }
 
     private const int WM_DEVICECHANGE = 0x0219;
@@ -76,4 +79,14 @@ public partial class MainWindow : Window
             MessageBox.Show(this, ex.Message, "Squeue", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
+}
+
+/// Shows only the file name of a full path; the full path goes in the tooltip.
+public sealed class FileNameConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture) =>
+        value is string path ? Path.GetFileName(path) is { Length: > 0 } name ? name : path : "";
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
 }

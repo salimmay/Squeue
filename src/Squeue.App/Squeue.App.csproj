@@ -9,7 +9,11 @@
     <RootNamespace>Squeue.App</RootNamespace>
     <!-- ThemeMode (the Fluent theme) is flagged as experimental in some SDKs. -->
     <NoWarn>$(NoWarn);WPF0001</NoWarn>
+    <ApplicationIcon>Assets\squeue.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets\squeue.ico" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Squeue.Core\Squeue.Core.csproj" />
     <ProjectReference Include="..\Squeue.ViewModels\Squeue.ViewModels.csproj" />

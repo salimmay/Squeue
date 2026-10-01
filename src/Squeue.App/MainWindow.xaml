@@ -2,18 +2,31 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="clr-namespace:Squeue.ViewModels;assembly=Squeue.ViewModels"
-        Title="Squeue" Width="460" Height="660" MinWidth="360" MinHeight="420"
+        xmlns:core="clr-namespace:Squeue.Core.Jobs;assembly=Squeue.Core"
+        xmlns:local="clr-namespace:Squeue.App"
+        Title="Squeue" Icon="Assets/squeue.ico" Width="520" Height="720" MinWidth="400" MinHeight="460"
         WindowStartupLocation="CenterScreen"
         AllowDrop="True" DragOver="OnDragOver" Drop="OnDrop">
     <Window.Resources>
-        <Style x:Key="IconButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-            <Setter Property="Width" Value="32" />
-            <Setter Property="Height" Value="32" />
-            <Setter Property="Padding" Value="0" />
-            <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
-            <Setter Property="FontSize" Value="14" />
+        <local:FileNameConverter x:Key="FileName" />
+        <CollectionViewSource x:Key="HistoryView">
+            <CollectionViewSource.GroupDescriptions>
+                <PropertyGroupDescription PropertyName="DayLabel" />
+            </CollectionViewSource.GroupDescriptions>
+        </CollectionViewSource>
+
+        <Style x:Key="TextButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Padding" Value="10,4" />
+            <Setter Property="FontSize" Value="12" />
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style x:Key="AccentTextButton" TargetType="Button" BasedOn="{StaticResource TextButton}">
+            <Setter Property="Foreground" Value="{DynamicResource AccentTextFillColorPrimaryBrush}" />
+        </Style>
+        <Style x:Key="SectionLabel" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
         </Style>
 
         <!-- New cards fade and rise into place; nothing bounces. -->
@@ -52,18 +65,34 @@
                         </StackPanel>
                         <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
                             <TextBlock Text="{Binding Percent}" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"
-                                       Margin="0,0,6,0" Visibility="{Binding IsRunning, Converter={StaticResource Visible}}" />
-                            <Button Style="{StaticResource IconButton}" Content="&#xE769;" ToolTip="Pause" AutomationProperties.Name="Pause"
+                                       Margin="0,0,6,0">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+                                                    <Condition Binding="{Binding IsRunning}" Value="True" />
+                                                    <Condition Binding="{Binding ShowProgress}" Value="True" />
+                                                </MultiDataTrigger.Conditions>
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </MultiDataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                            <Button Style="{StaticResource TextButton}" Content="Pause" AutomationProperties.Name="Pause"
                                     Command="{Binding PauseCommand}" Visibility="{Binding CanPause, Converter={StaticResource Visible}}" />
-                            <Button Style="{StaticResource IconButton}" Content="&#xE768;" ToolTip="Resume" AutomationProperties.Name="Resume"
+                            <Button Style="{StaticResource TextButton}" Content="Resume" AutomationProperties.Name="Resume"
                                     Command="{Binding ResumeCommand}" Visibility="{Binding CanResume, Converter={StaticResource Visible}}" />
-                            <Button Style="{StaticResource IconButton}" Content="&#xE711;" ToolTip="Cancel" AutomationProperties.Name="Cancel"
+                            <Button Style="{StaticResource TextButton}" Content="Cancel" AutomationProperties.Name="Cancel"
                                     Command="{Binding CancelCommand}" Visibility="{Binding CanCancel, Converter={StaticResource Visible}}" />
-                            <Button Style="{StaticResource IconButton}" Content="&#xE711;" ToolTip="Dismiss" AutomationProperties.Name="Dismiss"
+                            <Button Style="{StaticResource TextButton}" Content="Dismiss" AutomationProperties.Name="Dismiss"
                                     Command="{Binding DismissCommand}" Visibility="{Binding CanDismiss, Converter={StaticResource Visible}}" />
                         </StackPanel>
                     </Grid>
-                    <ProgressBar Maximum="1" Value="{Binding Fraction, Mode=OneWay}" Height="3" Margin="0,12,0,0" />
+                    <ProgressBar Maximum="1" Value="{Binding Fraction, Mode=OneWay}" Height="3" Margin="0,12,0,0"
+                                 Visibility="{Binding ShowProgress, Converter={StaticResource Visible}}" />
                     <Grid Margin="0,6,0,0">
                         <TextBlock Text="{Binding Status}" FontSize="11" Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
                         <TextBlock Text="{Binding TimeLeft}" FontSize="11" HorizontalAlignment="Right"
@@ -81,85 +110,348 @@
                 </DataTrigger>
             </DataTemplate.Triggers>
         </DataTemplate>
+
+        <DataTemplate x:Key="HistoryCard" DataType="{x:Type vm:HistoryItemViewModel}">
+            <Border CornerRadius="12" Padding="16,14" Margin="0,0,0,8"
+                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                <StackPanel>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding Route}" FontSize="12" Margin="0,2,0,0" TextTrimming="CharacterEllipsis"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="{Binding Details}" FontSize="11" Margin="0,2,0,0"
+                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+                        </StackPanel>
+                        <TextBlock x:Name="ResultText" Grid.Column="1" Text="{Binding Result}" FontSize="12" Margin="12,0,0,0"
+                                   VerticalAlignment="Top" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                    </Grid>
+                    <TextBlock Text="{Binding Reason}" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"
+                               Foreground="{DynamicResource SystemFillColorCautionBrush}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                    <Trigger Property="Text" Value="">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <Button Style="{StaticResource TextButton}" Content="Open folder" Command="{Binding OpenFolderCommand}" />
+                        <Button x:Name="ToggleButton" Style="{StaticResource TextButton}" Content="Show failed files"
+                                Command="{Binding ToggleFailedFilesCommand}" Visibility="{Binding CanRetry, Converter={StaticResource Visible}}" />
+                        <Button Style="{StaticResource TextButton}" Content="Retry failed" Command="{Binding RetryFailedCommand}"
+                                Visibility="{Binding CanRetry, Converter={StaticResource Visible}}" />
+                    </StackPanel>
+                    <ScrollViewer MaxHeight="180" VerticalScrollBarVisibility="Auto" Margin="0,6,0,0"
+                                  Visibility="{Binding ShowsFailedFiles, Converter={StaticResource Visible}}">
+                        <ItemsControl ItemsSource="{Binding FailedFiles}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="{x:Type core:FailedFile}">
+                                    <StackPanel Margin="0,0,0,6" ToolTip="{Binding Path}">
+                                        <TextBlock Text="{Binding Path, Converter={StaticResource FileName}}" FontSize="12" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding Reason}" FontSize="11" TextWrapping="Wrap"
+                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </StackPanel>
+            </Border>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding NeedsAttention}" Value="True">
+                    <Setter TargetName="ResultText" Property="FontWeight" Value="SemiBold" />
+                    <Setter TargetName="ResultText" Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding ShowsFailedFiles}" Value="True">
+                    <Setter TargetName="ToggleButton" Property="Content" Value="Hide failed files" />
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+
+        <!-- One step of the "How it works" row. -->
+        <Style x:Key="StepBox" TargetType="Border">
+            <Setter Property="CornerRadius" Value="12" />
+            <Setter Property="Padding" Value="12" />
+            <Setter Property="Background" Value="{DynamicResource CardBackgroundFillColorDefaultBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource CardStrokeColorDefaultBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+        </Style>
     </Window.Resources>
 
-    <Grid Margin="20">
+    <Grid Margin="20,16,20,20">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <Grid>
-            <StackPanel>
-                <TextBlock Text="Queue" FontSize="26" FontWeight="SemiBold" />
-                <TextBlock Text="{Binding Subtitle}" FontSize="12" Margin="0,2,0,0" TextWrapping="Wrap"
-                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-            </StackPanel>
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
-                <Button Style="{StaticResource IconButton}" Content="&#xE8B7;" ToolTip="Copy folders" AutomationProperties.Name="Copy folders" Click="OnAddFolders" />
-                <Button Style="{StaticResource IconButton}" Content="&#xE8E5;" ToolTip="Copy files" AutomationProperties.Name="Copy files" Click="OnAddFiles" />
-            </StackPanel>
-        </Grid>
+        <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+            <TextBlock Text="Squeue" FontSize="20" FontWeight="SemiBold" VerticalAlignment="Bottom" />
+            <TextBlock Text="Copies files safely, one drive at a time" FontSize="12" Margin="12,0,0,3" VerticalAlignment="Bottom"
+                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+        </StackPanel>
 
-        <ItemsControl Grid.Row="1" ItemsSource="{Binding Drives}" Margin="0,16,0,12">
-            <ItemsControl.ItemsPanel>
-                <ItemsPanelTemplate>
-                    <WrapPanel />
-                </ItemsPanelTemplate>
-            </ItemsControl.ItemsPanel>
-            <ItemsControl.ItemTemplate>
-                <DataTemplate DataType="{x:Type vm:DriveViewModel}">
-                    <Border CornerRadius="10" Padding="10,4" Margin="0,0,6,6"
-                            Background="{DynamicResource SubtleFillColorSecondaryBrush}">
-                        <StackPanel Orientation="Horizontal">
-                            <Ellipse x:Name="Dot" Width="6" Height="6" Margin="0,0,6,0" VerticalAlignment="Center"
-                                     Fill="{DynamicResource ControlStrongStrokeColorDisabledBrush}" />
-                            <TextBlock Text="{Binding Name}" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+        <TabControl Grid.Row="1">
+            <TabItem Header="Queue">
+                <Grid Margin="0,16,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <StackPanel>
+                        <TextBlock Text="Your drives · a filled dot means the drive is being used" Style="{StaticResource SectionLabel}" />
+                        <ItemsControl ItemsSource="{Binding Drives}" Margin="0,8,0,8">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="{x:Type vm:DriveViewModel}">
+                                    <Border CornerRadius="10" Padding="10,4" Margin="0,0,6,6"
+                                            Background="{DynamicResource SubtleFillColorSecondaryBrush}">
+                                        <StackPanel Orientation="Horizontal">
+                                            <Ellipse x:Name="Dot" Width="6" Height="6" Margin="0,0,6,0" VerticalAlignment="Center"
+                                                     Fill="{DynamicResource ControlStrongStrokeColorDisabledBrush}" />
+                                            <TextBlock Text="{Binding Name}" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                        </StackPanel>
+                                    </Border>
+                                    <DataTemplate.Triggers>
+                                        <DataTrigger Binding="{Binding IsBusy}" Value="True">
+                                            <Setter TargetName="Dot" Property="Fill" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+                                        </DataTrigger>
+                                    </DataTemplate.Triggers>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+
+                    <Border Grid.Row="1" CornerRadius="12" Padding="16" Margin="0,0,0,12" BorderThickness="1"
+                            BorderBrush="{DynamicResource AccentFillColorDefaultBrush}"
+                            Visibility="{Binding HasPlan, Converter={StaticResource Visible}}">
+                        <StackPanel DataContext="{Binding PendingPlan}">
+                            <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock Text="{Binding Summary}" FontSize="12" Margin="0,2,0,10" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="{Binding ExistingNote}" FontSize="12"
+                                       Visibility="{Binding HasExisting, Converter={StaticResource Visible}}" />
+                            <CheckBox Content="Replace them" IsChecked="{Binding Overwrite}" Margin="0,4,0,0"
+                                      Visibility="{Binding HasExisting, Converter={StaticResource Visible}}" />
+                            <TextBlock Text="{Binding SkippedNote}" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource SystemFillColorCautionBrush}"
+                                       Visibility="{Binding HasSkipped, Converter={StaticResource Visible}}" />
+                            <TextBlock Text="{Binding LinksNote}" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap"
+                                       Foreground="{DynamicResource SystemFillColorCautionBrush}"
+                                       Visibility="{Binding HasLinks, Converter={StaticResource Visible}}" />
+                            <CheckBox Content="Check every file after copying" IsChecked="{Binding Verify}" Margin="0,4,0,0"
+                                      IsEnabled="{Binding CanChangeVerify}" />
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+                                <Button Content="Cancel" Command="{Binding DismissCommand}" Margin="0,0,8,0" />
+                                <Button Content="Start copying" Command="{Binding StartCommand}" Style="{DynamicResource AccentButtonStyle}" />
+                            </StackPanel>
                         </StackPanel>
                     </Border>
-                    <DataTemplate.Triggers>
-                        <DataTrigger Binding="{Binding IsBusy}" Value="True">
-                            <Setter TargetName="Dot" Property="Fill" Value="{DynamicResource TextFillColorPrimaryBrush}" />
-                        </DataTrigger>
-                    </DataTemplate.Triggers>
-                </DataTemplate>
-            </ItemsControl.ItemTemplate>
-        </ItemsControl>
 
-        <Border Grid.Row="2" CornerRadius="12" Padding="16" Margin="0,0,0,12" BorderThickness="1"
-                BorderBrush="{DynamicResource AccentFillColorDefaultBrush}"
-                Visibility="{Binding HasPlan, Converter={StaticResource Visible}}">
-            <StackPanel DataContext="{Binding PendingPlan}">
-                <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="SemiBold" />
-                <TextBlock Text="{Binding Summary}" FontSize="12" Margin="0,2,0,10" TextWrapping="Wrap"
-                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                <TextBlock Text="{Binding ExistingNote}" FontSize="12"
-                           Visibility="{Binding HasExisting, Converter={StaticResource Visible}}" />
-                <CheckBox Content="Replace them" IsChecked="{Binding Overwrite}" Margin="0,4,0,0"
-                          Visibility="{Binding HasExisting, Converter={StaticResource Visible}}" />
-                <TextBlock Text="{Binding SkippedNote}" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap"
-                           Foreground="{DynamicResource SystemFillColorCautionBrush}"
-                           Visibility="{Binding HasSkipped, Converter={StaticResource Visible}}" />
-                <TextBlock Text="{Binding LinksNote}" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap"
-                           Foreground="{DynamicResource SystemFillColorCautionBrush}"
-                           Visibility="{Binding HasLinks, Converter={StaticResource Visible}}" />
-                <CheckBox Content="Verify every file after copying" IsChecked="{Binding Verify}" Margin="0,4,0,0"
-                          IsEnabled="{Binding CanChangeVerify}" />
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
-                    <Button Content="Cancel" Command="{Binding DismissCommand}" Margin="0,0,8,0" />
-                    <Button Content="Start copying" Command="{Binding StartCommand}" Style="{DynamicResource AccentButtonStyle}" />
+                    <!-- Empty state: a drop area and a short explanation. -->
+                    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto"
+                                  Visibility="{Binding IsEmpty, Converter={StaticResource Visible}}">
+                        <StackPanel>
+                            <Grid>
+                                <Rectangle RadiusX="12" RadiusY="12" StrokeThickness="1.5" StrokeDashArray="4 3"
+                                           Stroke="{DynamicResource ControlStrongStrokeColorDefaultBrush}" />
+                                <StackPanel Margin="16,32" HorizontalAlignment="Center">
+                                    <TextBlock Text="Drop files or folders here" FontSize="16" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                                    <TextBlock Text="or choose them yourself" FontSize="12" Margin="0,4,0,12" HorizontalAlignment="Center"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                        <Button Style="{StaticResource AccentTextButton}" Content="Copy a folder…" Click="OnAddFolders" />
+                                        <Button Style="{StaticResource TextButton}" Content="Copy files…" Click="OnAddFiles" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Grid>
+                            <TextBlock Text="How it works" Style="{StaticResource SectionLabel}" Margin="0,20,0,8" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition />
+                                    <ColumnDefinition Width="8" />
+                                    <ColumnDefinition />
+                                    <ColumnDefinition Width="8" />
+                                    <ColumnDefinition />
+                                </Grid.ColumnDefinitions>
+                                <Border Style="{StaticResource StepBox}">
+                                    <StackPanel>
+                                        <TextBlock Text="1 · Choose" FontSize="13" FontWeight="SemiBold" />
+                                        <TextBlock Text="What to copy and where to" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,0"
+                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="2" Style="{StaticResource StepBox}">
+                                    <StackPanel>
+                                        <TextBlock Text="2 · Copy" FontSize="13" FontWeight="SemiBold" />
+                                        <TextBlock Text="One job per drive, others wait their turn" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,0"
+                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="4" Style="{StaticResource StepBox}">
+                                    <StackPanel>
+                                        <TextBlock Text="3 · Check" FontSize="13" FontWeight="SemiBold" />
+                                        <TextBlock Text="Every copy is read back and compared" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,0"
+                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Jobs: shown when there is anything in the queue. -->
+                    <Grid Grid.Row="2">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <Grid.Style>
+                            <Style TargetType="Grid">
+                                <Setter Property="Visibility" Value="Visible" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsEmpty}" Value="True">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Grid.Style>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button Style="{StaticResource AccentTextButton}" Content="Copy a folder…" Click="OnAddFolders" />
+                            <Button Style="{StaticResource TextButton}" Content="Copy files…" Click="OnAddFiles" />
+                        </StackPanel>
+                        <TextBlock Grid.Row="1" Text="Jobs" Style="{StaticResource SectionLabel}" Margin="0,4,0,8" />
+                        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                            <ItemsControl ItemsSource="{Binding Jobs}" ItemTemplate="{StaticResource JobCard}" />
+                        </ScrollViewer>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="{Binding HistoryHeader}">
+                <Grid Margin="0,16,0,0">
+                    <TextBlock Text="Finished jobs appear here." FontSize="12" HorizontalAlignment="Center" Margin="0,24,0,0"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding History.Count}" Value="0">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding Source={StaticResource HistoryView}}" ItemTemplate="{StaticResource HistoryCard}">
+                            <ItemsControl.GroupStyle>
+                                <GroupStyle>
+                                    <GroupStyle.HeaderTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Name}" Style="{StaticResource SectionLabel}" Margin="0,4,0,8" />
+                                        </DataTemplate>
+                                    </GroupStyle.HeaderTemplate>
+                                </GroupStyle>
+                            </ItemsControl.GroupStyle>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="Settings">
+                <StackPanel Margin="0,16,0,0" DataContext="{Binding Settings}">
+                    <Border CornerRadius="12" Padding="16,14" Margin="0,0,0,8"
+                            Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="Check every file after copying" FontSize="14" FontWeight="SemiBold" />
+                                <TextBlock Text="Reads each copy back and compares it. Slower, safer." FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            </StackPanel>
+                            <CheckBox Grid.Column="1" VerticalAlignment="Center" Margin="12,0,0,0" MinWidth="0"
+                                      AutomationProperties.Name="Check every file after copying"
+                                      IsChecked="{Binding CheckAfterCopying, Mode=TwoWay}" />
+                        </Grid>
+                    </Border>
+                    <Border CornerRadius="12" Padding="16,14" Margin="0,0,0,8"
+                            Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="When a file already exists" FontSize="14" FontWeight="SemiBold" />
+                                <TextBlock Text="You can still change this for each job." FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            </StackPanel>
+                            <ComboBox Grid.Column="1" VerticalAlignment="Center" Margin="12,0,0,0" MinWidth="150"
+                                      AutomationProperties.Name="When a file already exists"
+                                      ItemsSource="{Binding ExistingFilesChoices}" DisplayMemberPath="Label"
+                                      SelectedValuePath="Value" SelectedValue="{Binding ExistingFiles, Mode=TwoWay}" />
+                        </Grid>
+                    </Border>
+                    <Border CornerRadius="12" Padding="16,14" Margin="0,0,0,8"
+                            Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="When everything is done" FontSize="14" FontWeight="SemiBold" />
+                                <TextBlock Text="What Squeue does when the queue is empty." FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            </StackPanel>
+                            <ComboBox Grid.Column="1" VerticalAlignment="Center" Margin="12,0,0,0" MinWidth="150"
+                                      AutomationProperties.Name="When everything is done"
+                                      ItemsSource="{Binding WhenDoneChoices}" DisplayMemberPath="Label"
+                                      SelectedValuePath="Value" SelectedValue="{Binding WhenDone, Mode=TwoWay}" />
+                        </Grid>
+                    </Border>
+                    <Border CornerRadius="12" Padding="16,14" Margin="0,0,0,8"
+                            Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="Keep history for" FontSize="14" FontWeight="SemiBold" />
+                                <TextBlock Text="Older jobs are removed from the list at the next start." FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            </StackPanel>
+                            <ComboBox Grid.Column="1" VerticalAlignment="Center" Margin="12,0,0,0" MinWidth="150"
+                                      AutomationProperties.Name="Keep history for"
+                                      ItemsSource="{Binding HistoryDaysChoices}" DisplayMemberPath="Label"
+                                      SelectedValuePath="Value" SelectedValue="{Binding HistoryDays, Mode=TwoWay}" />
+                        </Grid>
+                    </Border>
                 </StackPanel>
-            </StackPanel>
-        </Border>
-
-        <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
-            <ItemsControl ItemsSource="{Binding Jobs}" ItemTemplate="{StaticResource JobCard}" />
-        </ScrollViewer>
-
-        <TextBlock Grid.Row="4" Text="{Binding DoneToday}" FontSize="12" Margin="4,8,0,0"
-                   Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+            </TabItem>
+        </TabControl>
     </Grid>
 </Window>
