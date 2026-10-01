@@ -127,6 +127,8 @@ public sealed class JobRunner : IJobQueue
                 if (job.State is JobState.Running or JobState.Verifying) journal.SetJobState(job.Id, JobState.Queued);
             }
             TidyHistory();
+            TraceJournalSize(journal);
+            journal.Checkpoint();
             // Every job left is shown: finished ones come from their stored summary, so launch time stays flat.
             foreach (var job in journal.Jobs()) Publish(SnapshotOf(job));
 
@@ -178,6 +180,24 @@ public sealed class JobRunner : IJobQueue
                 journal.PruneFinishedBefore(DateTime.UtcNow.AddDays(-_options.HistoryDays).ToFileTimeUtc());
         }
         catch (Exception ex) { Trace.TraceError($"Removing old finished jobs failed: {ex}"); }
+    }
+
+    private static void TraceJournalSize(Journal journal)
+    {
+        try
+        {
+            var jobs = journal.Jobs();
+            int unfinished = jobs.Count(j => j.State is not (JobState.Done or JobState.Cancelled));
+            Trace.TraceInformation($"Squeue journal: {jobs.Count} jobs ({unfinished} unfinished)");
+        }
+        catch (Exception ex) { Trace.TraceWarning($"Squeue journal: couldn't count jobs: {ex.Message}"); }
+    }
+
+    /// Finishes a job and then checkpoints the journal. Never call it inside Atomically.
+    private void FinishAndCheckpoint(long jobId, JobState state)
+    {
+        Finish(jobId, state);
+        _journal!.Checkpoint();
     }
 
     /// Marks the job done or cancelled and stores its counts as they are now.
@@ -440,7 +460,7 @@ public sealed class JobRunner : IJobQueue
         var journal = _journal!;
         var state = journal.GetJob(jobId).State;
         // Cancelled while it was running: its counts are final only now that the worker has stopped.
-        if (state == JobState.Cancelled) Finish(jobId, JobState.Cancelled);
+        if (state == JobState.Cancelled) FinishAndCheckpoint(jobId, JobState.Cancelled);
         else if (state is JobState.Running or JobState.Verifying)
         {
             if (pauseReason is not null)
@@ -452,7 +472,7 @@ public sealed class JobRunner : IJobQueue
             {
                 // Files whose verification failed are Pending again: the job re-queues for a retry pass.
                 bool finished = journal.EntriesOf(jobId).All(e => e.State is EntryState.Done or EntryState.Failed);
-                if (finished) Finish(jobId, JobState.Done);
+                if (finished) FinishAndCheckpoint(jobId, JobState.Done);
                 else journal.SetJobState(jobId, JobState.Queued);
             }
         }
@@ -478,7 +498,7 @@ public sealed class JobRunner : IJobQueue
         var journal = _journal!;
         if (!from.Contains(journal.GetJob(jobId).State)) return;
         // A job cancelled while its worker is still stopping is finished again, with its final counts, when the worker exits.
-        if (to == JobState.Cancelled) Finish(jobId, to);
+        if (to == JobState.Cancelled) FinishAndCheckpoint(jobId, to);
         else journal.SetJobState(jobId, to);
         if (to == JobState.Queued) _jobErrors.Remove(jobId);
         _waiting.Remove(jobId);

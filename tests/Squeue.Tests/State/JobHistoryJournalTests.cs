@@ -124,4 +124,25 @@ public class JobHistoryJournalTests
         journal.FinishJob(legacy.Id, JobState.Done, new JobSummary(1, 1, 0, 10, null));
         Assert.Equal(new JobSummary(1, 1, 0, 10, null), journal.GetJob(legacy.Id).Summary);
     }
+
+    [Fact]
+    public void Checkpoint_moves_the_data_into_the_main_database_file()
+    {
+        using var dir = new TestDir();
+        using var journal = Journal.Open(dir.PathOf("state.db"));
+        long id = journal.CreateJob(null, "DCIM");
+
+        journal.Checkpoint();
+
+        // Only the main file is copied, without its -wal: the job has to be in it.
+        string copy = dir.PathOf("copy/state.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(copy)!);
+        File.Copy(dir.PathOf("state.db"), copy);
+        using var raw = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = copy, Pooling = false, Mode = SqliteOpenMode.ReadOnly }.ToString());
+        raw.Open();
+        using var cmd = raw.CreateCommand();
+        cmd.CommandText = "SELECT name FROM jobs WHERE id = $id";
+        cmd.Parameters.AddWithValue("$id", id);
+        Assert.Equal("DCIM", cmd.ExecuteScalar());
+    }
 }

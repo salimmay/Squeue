@@ -38,4 +38,6 @@ Next:
 - Moves
 - Read-only, metadata and exFAT handling
 - Queue reordering and "safe to remove" for cards
+- Copy again from history
+- Windows notifications
 - Explorer right-click menu and installer

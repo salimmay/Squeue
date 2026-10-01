@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Data.Sqlite;
 using Squeue.Core.FileSystem;
 
@@ -275,6 +276,14 @@ public sealed class Journal : IDisposable
     {
         using var cmd = Command($"PRAGMA {name}");
         return Convert.ToString(cmd.ExecuteScalar())!;
+    }
+
+    /// Moves what the write-ahead log holds into the main database file, so the data doesn't live only in the log.
+    /// Passive: it never waits for other connections. A failure is traced, not thrown. Not for use inside Atomically.
+    public void Checkpoint()
+    {
+        try { Exec("PRAGMA wal_checkpoint(PASSIVE);"); }
+        catch (Exception ex) { Trace.TraceWarning($"Squeue journal: checkpoint failed: {ex.Message}"); }
     }
 
     public void Dispose() => _db.Dispose();
