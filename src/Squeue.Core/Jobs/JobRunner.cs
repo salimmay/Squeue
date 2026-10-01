@@ -126,8 +126,7 @@ public sealed class JobRunner : IJobQueue
                 // A job that was running or verifying when the app stopped goes back in the queue.
                 if (job.State is JobState.Running or JobState.Verifying) journal.SetJobState(job.Id, JobState.Queued);
             }
-            try { TidyHistory(); }
-            catch (Exception ex) { Trace.TraceError($"Tidying the job history failed: {ex}"); }
+            TidyHistory();
             // Every job left is shown: finished ones come from their stored summary, so launch time stays flat.
             foreach (var job in journal.Jobs()) Publish(SnapshotOf(job));
 
@@ -154,15 +153,31 @@ public sealed class JobRunner : IJobQueue
 
     /// Finished jobs from before summaries were kept get one (and a finish time, so they can age out);
     /// then finished jobs older than the history window are removed.
+    /// Neither step failing stops the other, or the coordinator.
     private void TidyHistory()
     {
         var journal = _journal!;
-        foreach (var job in journal.Jobs())
+        try
         {
-            if (job.State is JobState.Done or JobState.Cancelled && job.Summary is null) Finish(job.Id, job.State);
+            var legacy = journal.Jobs().Where(j => j.State is JobState.Done or JobState.Cancelled && j.Summary is null).ToList();
+            // One commit however many there are. One job failing doesn't skip the rest.
+            if (legacy.Count > 0)
+                journal.Atomically(() =>
+                {
+                    foreach (var job in legacy)
+                    {
+                        try { Finish(job.Id, job.State); }
+                        catch (Exception ex) { Trace.TraceError($"Couldn't summarise finished job {job.Id}: {ex}"); }
+                    }
+                });
         }
-        if (_options.HistoryDays > 0)
-            journal.PruneFinishedBefore(DateTime.UtcNow.AddDays(-_options.HistoryDays).ToFileTimeUtc());
+        catch (Exception ex) { Trace.TraceError($"Summarising finished jobs failed: {ex}"); }
+        try
+        {
+            if (_options.HistoryDays > 0)
+                journal.PruneFinishedBefore(DateTime.UtcNow.AddDays(-_options.HistoryDays).ToFileTimeUtc());
+        }
+        catch (Exception ex) { Trace.TraceError($"Removing old finished jobs failed: {ex}"); }
     }
 
     /// Marks the job done or cancelled and stores its counts as they are now.
@@ -176,7 +191,8 @@ public sealed class JobRunner : IJobQueue
     private void RetryFailedFiles(long jobId)
     {
         var journal = _journal!;
-        if (journal.GetJob(jobId).State is not (JobState.Done or JobState.Cancelled) || _workers.ContainsKey(jobId)) return;
+        // Only a job that finished: retrying a cancelled one would undo the cancel.
+        if (journal.GetJob(jobId).State != JobState.Done || _workers.ContainsKey(jobId)) return;
         bool retried = false;
         // Together, so a crash can't leave a finished job with files waiting.
         journal.Atomically(() =>
@@ -193,8 +209,17 @@ public sealed class JobRunner : IJobQueue
 
     private void LoadFailedFiles(long jobId)
     {
-        IReadOnlyList<FailedFile> files =
-            [.. _journal!.FailedEntriesOf(jobId, MaxFailedFiles).Select(e => new FailedFile(e.SrcPath, e.Error ?? "Unknown error"))];
+        // Whoever asked always gets an answer, even if the journal can't be read.
+        IReadOnlyList<FailedFile> files;
+        try
+        {
+            files = [.. _journal!.FailedEntriesOf(jobId, MaxFailedFiles).Select(e => new FailedFile(e.SrcPath, e.Error ?? "Unknown error"))];
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceError($"Couldn't read the failed files of job {jobId}: {ex}");
+            files = [];
+        }
         foreach (var handler in FailedFilesLoaded?.GetInvocationList() ?? [])
         {
             try { ((Action<long, IReadOnlyList<FailedFile>>)handler)(jobId, files); }

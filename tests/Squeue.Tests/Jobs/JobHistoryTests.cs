@@ -184,6 +184,35 @@ public class JobHistoryTests
     }
 
     [Fact]
+    public void RetryFailed_does_nothing_for_a_cancelled_job()
+    {
+        using var h = new RunnerHarness();
+        string src = h.Dir.Write(@"card\a.bin", TestDir.RandomBytes(100));
+        long jobId, entryId;
+        using (var journal = Journal.Open(h.JournalPath))
+        {
+            jobId = journal.CreateJob("xxh3", "card", h.Dir.PathOf("card"), h.Dir.PathOf("backup"));
+            entryId = journal.AddEntry(jobId, src, h.Dir.PathOf(@"backup\card\a.bin"), 100, ConflictAction.Create, null);
+            journal.SetEntryState(entryId, EntryState.Failed, "It could not be read.");
+            journal.FinishJob(jobId, JobState.Cancelled, new JobSummary(1, 0, 1, 100, "It could not be read."));
+        }
+        h.Runner.Start();
+        h.WaitFor(s => s.Id == jobId && s.State == JobState.Cancelled);
+
+        h.Runner.RetryFailed(jobId);
+        RunMarkerJob(h);
+
+        Assert.Single(h.Events, s => s.Id == jobId); // still only the startup snapshot: never Queued or Running
+        Assert.False(File.Exists(h.Dir.PathOf(@"backup\card\a.bin")));
+        h.Runner.Dispose();
+        using (var journal = Journal.Open(h.JournalPath))
+        {
+            Assert.Equal(JobState.Cancelled, journal.GetJob(jobId).State);
+            Assert.Equal(EntryState.Failed, journal.GetEntry(entryId).State);
+        }
+    }
+
+    [Fact]
     public void Failed_files_can_be_requested()
     {
         using var h = new RunnerHarness();

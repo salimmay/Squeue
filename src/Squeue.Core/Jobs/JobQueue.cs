@@ -47,7 +47,8 @@ public interface IJobQueue : IDisposable
     void Resume(long jobId);
     void Cancel(long jobId);
 
-    /// Puts the failed files of a finished job back in line and queues the job again. Does nothing if it has none.
+    /// Puts the failed files of a job that finished (Done) back in line and queues the job again.
+    /// Does nothing if it has none, or if the job was cancelled or hasn't finished.
     void RetryFailed(long jobId);
 
     /// Asks for the job's failed files; they arrive through FailedFilesLoaded.
