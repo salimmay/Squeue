@@ -164,6 +164,21 @@
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
                     </ScrollViewer>
+                    <TextBlock Text="{Binding FailedFilesNote}" FontSize="11" Margin="0,4,0,0"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                    <Trigger Property="Text" Value="">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </Trigger>
+                                    <DataTrigger Binding="{Binding ShowsFailedFiles}" Value="False">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
                 </StackPanel>
             </Border>
             <DataTemplate.Triggers>
@@ -199,7 +214,7 @@
                        Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
         </StackPanel>
 
-        <TabControl Grid.Row="1">
+        <TabControl x:Name="Tabs" Grid.Row="1">
             <TabItem Header="Queue">
                 <Grid Margin="0,16,0,0">
                     <Grid.RowDefinitions>
@@ -305,7 +320,7 @@
                                 <Border Grid.Column="4" Style="{StaticResource StepBox}">
                                     <StackPanel>
                                         <TextBlock Text="3 · Check" FontSize="13" FontWeight="SemiBold" />
-                                        <TextBlock Text="Every copy is read back and compared" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,0"
+                                        <TextBlock Text="Copies are read back and compared" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,0"
                                                    Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                                     </StackPanel>
                                 </Border>
@@ -334,8 +349,13 @@
                             <Button Style="{StaticResource AccentTextButton}" Content="Copy a folder…" Click="OnAddFolders" />
                             <Button Style="{StaticResource TextButton}" Content="Copy files…" Click="OnAddFiles" />
                         </StackPanel>
-                        <TextBlock Grid.Row="1" Text="Jobs" Style="{StaticResource SectionLabel}" Margin="0,4,0,8" />
-                        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                        <Grid Grid.Row="1" Margin="0,4,0,8" Visibility="{Binding HasJobs, Converter={StaticResource Visible}}">
+                            <TextBlock Text="Jobs" Style="{StaticResource SectionLabel}" />
+                            <TextBlock Text="{Binding Subtitle}" FontSize="12" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                        </Grid>
+                        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto"
+                                      Visibility="{Binding HasJobs, Converter={StaticResource Visible}}">
                             <ItemsControl ItemsSource="{Binding Jobs}" ItemTemplate="{StaticResource JobCard}" />
                         </ScrollViewer>
                     </Grid>

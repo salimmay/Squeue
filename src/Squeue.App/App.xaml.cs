@@ -54,7 +54,11 @@ public partial class App : Application
 
     private static void OpenFolder(string path)
     {
-        if (!Directory.Exists(path)) return;
+        if (!Directory.Exists(path))
+        {
+            MessageBox.Show($"{path} isn't available. The drive may not be connected.", "Squeue", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         Process.Start(new ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true });
     }
 

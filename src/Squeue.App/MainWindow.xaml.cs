@@ -20,6 +20,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         _viewModel = viewModel;
         DataContext = viewModel;
+        viewModel.ShowQueueRequested += () => Tabs.SelectedIndex = 0;
         ((CollectionViewSource)Resources["HistoryView"]).Source = viewModel.History;
     }
 
@@ -73,6 +74,7 @@ public partial class MainWindow : Window
             // Listing a big card can take a moment; keep the window responsive.
             var plan = await Task.Run(() => JobPlanner.Plan(_fs, sources, destination));
             _viewModel.ProposePlan(plan);
+            Tabs.SelectedIndex = 0; // the plan appears in the Queue tab
         }
         catch (Exception ex)
         {
