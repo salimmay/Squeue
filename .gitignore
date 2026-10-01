@@ -482,3 +482,6 @@ $RECYCLE.BIN/
 *.swp
 .superpowers/
 tools/
+
+# Release build output
+dist/
