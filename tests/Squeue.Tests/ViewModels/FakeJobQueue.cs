@@ -7,6 +7,7 @@ namespace Squeue.Tests.ViewModels;
 public sealed class FakeJobQueue : IJobQueue
 {
     public event Action<JobSnapshot>? JobChanged;
+    public event Action<long, IReadOnlyList<FailedFile>>? FailedFilesLoaded;
     public List<string> Calls { get; } = [];
 
     public void Raise(JobSnapshot snapshot) => JobChanged?.Invoke(snapshot);
@@ -15,13 +16,17 @@ public sealed class FakeJobQueue : IJobQueue
     public void Pause(long jobId) => Calls.Add($"Pause {jobId}");
     public void Resume(long jobId) => Calls.Add($"Resume {jobId}");
     public void Cancel(long jobId) => Calls.Add($"Cancel {jobId}");
+    public void RetryFailed(long jobId) => Calls.Add($"RetryFailed {jobId}");
+    public void RequestFailedFiles(long jobId) => Calls.Add($"RequestFailedFiles {jobId}");
+    public void RaiseFailedFiles(long jobId, IReadOnlyList<FailedFile> files) => FailedFilesLoaded?.Invoke(jobId, files);
     public void Dispose() { }
 
     public static JobSnapshot Snapshot(long id = 1, JobState state = JobState.Running, long total = 100 * 1048576,
         long done = 25 * 1048576, double speed = 10 * 1048576, string source = @"E:\DCIM", string dest = @"F:\Backup",
-        int files = 2, int failed = 0, DateTime? created = null) =>
+        int files = 2, int failed = 0, DateTime? created = null,
+        DateTime? finished = null, bool checkedCopies = false) =>
         new(id, "DCIM", source, dest, state, files, 0, failed, total, done, "IMG_0001.CR3", speed, null,
-            created ?? DateTime.UtcNow);
+            created ?? DateTime.UtcNow, null, finished, checkedCopies);
 }
 
 public sealed class FakeDrives(params DriveInfoLite[] drives) : IDriveSource

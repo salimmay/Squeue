@@ -14,6 +14,7 @@ public sealed class RunnerHarness : IDisposable
     };
 
     private readonly List<JobSnapshot> _events = [];
+    private readonly Dictionary<long, IReadOnlyList<FailedFile>> _failedFiles = [];
     private readonly object _lock = new();
 
     private readonly IDiskTopology? _topology;
@@ -64,6 +65,22 @@ public sealed class RunnerHarness : IDisposable
         }
     }
 
+    /// The failed files reported for a job by RequestFailedFiles.
+    public IReadOnlyList<FailedFile> WaitForFailedFiles(long jobId, int timeoutMs = 30_000)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        lock (_lock)
+        {
+            while (true)
+            {
+                if (_failedFiles.TryGetValue(jobId, out var files)) return files;
+                var left = deadline - DateTime.UtcNow;
+                if (left <= TimeSpan.Zero) throw new TimeoutException($"The failed files of job {jobId} never arrived.");
+                Monitor.Wait(_lock, left);
+            }
+        }
+    }
+
     /// Simulates closing and relaunching the app: disposes the runner and starts a new one on the same journal.
     /// Snapshots from before the restart are forgotten.
     public void Restart()
@@ -91,6 +108,14 @@ public sealed class RunnerHarness : IDisposable
                 Monitor.PulseAll(_lock);
             }
             OnEvent?.Invoke(snapshot);
+        };
+        runner.FailedFilesLoaded += (jobId, files) =>
+        {
+            lock (_lock)
+            {
+                _failedFiles[jobId] = files;
+                Monitor.PulseAll(_lock);
+            }
         };
         return runner;
     }

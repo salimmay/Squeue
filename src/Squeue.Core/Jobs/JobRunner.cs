@@ -43,6 +43,7 @@ public sealed class JobRunner : IJobQueue
     }
 
     public event Action<JobSnapshot>? JobChanged;
+    public event Action<long, IReadOnlyList<FailedFile>>? FailedFilesLoaded;
 
     public void Start()
     {
@@ -77,6 +78,10 @@ public sealed class JobRunner : IJobQueue
         Post(() => ChangeState(jobId, JobState.Cancelled, JobState.Queued, JobState.Running, JobState.Verifying, JobState.Paused));
         StopIfRunning(jobId, run);
     }
+
+    public void RetryFailed(long jobId) => Post(() => RetryFailedFiles(jobId));
+
+    public void RequestFailedFiles(long jobId) => Post(() => LoadFailedFiles(jobId));
 
     /// Stops every running job (its current file is cleaned up or left to finish next launch) and ends the
     /// coordinator, waiting at most ShutdownTimeout.
@@ -121,13 +126,10 @@ public sealed class JobRunner : IJobQueue
                 // A job that was running or verifying when the app stopped goes back in the queue.
                 if (job.State is JobState.Running or JobState.Verifying) journal.SetJobState(job.Id, JobState.Queued);
             }
-            // Unfinished jobs, and today's finished ones; older history isn't shown, so launch time stays flat.
-            var today = DateTime.Now.Date;
-            foreach (var job in journal.Jobs())
-            {
-                bool finished = job.State is JobState.Done or JobState.Cancelled;
-                if (!finished || DateTime.FromFileTimeUtc(job.CreatedAt).ToLocalTime().Date == today) Publish(SnapshotOf(job.Id));
-            }
+            try { TidyHistory(); }
+            catch (Exception ex) { Trace.TraceError($"Tidying the job history failed: {ex}"); }
+            // Every job left is shown: finished ones come from their stored summary, so launch time stays flat.
+            foreach (var job in journal.Jobs()) Publish(SnapshotOf(job));
 
             SchedulePassSafely();
             while (true)
@@ -149,6 +151,58 @@ public sealed class JobRunner : IJobQueue
             StopWorkers();
         }
     }
+
+    /// Finished jobs from before summaries were kept get one (and a finish time, so they can age out);
+    /// then finished jobs older than the history window are removed.
+    private void TidyHistory()
+    {
+        var journal = _journal!;
+        foreach (var job in journal.Jobs())
+        {
+            if (job.State is JobState.Done or JobState.Cancelled && job.Summary is null) Finish(job.Id, job.State);
+        }
+        if (_options.HistoryDays > 0)
+            journal.PruneFinishedBefore(DateTime.UtcNow.AddDays(-_options.HistoryDays).ToFileTimeUtc());
+    }
+
+    /// Marks the job done or cancelled and stores its counts as they are now.
+    private void Finish(long jobId, JobState state)
+    {
+        var journal = _journal!;
+        journal.FinishJob(jobId, state, JobCounters.From(journal.EntriesOf(jobId)).ToSummary());
+        _jobErrors.Remove(jobId);
+    }
+
+    private void RetryFailedFiles(long jobId)
+    {
+        var journal = _journal!;
+        if (journal.GetJob(jobId).State is not (JobState.Done or JobState.Cancelled) || _workers.ContainsKey(jobId)) return;
+        bool retried = false;
+        // Together, so a crash can't leave a finished job with files waiting.
+        journal.Atomically(() =>
+        {
+            if (journal.RetryFailedEntries(jobId) == 0) return;
+            journal.SetJobState(jobId, JobState.Queued);
+            retried = true;
+        });
+        if (!retried) return;
+        _jobErrors.Remove(jobId);
+        _waiting.Remove(jobId);
+        Publish(SnapshotOf(jobId));
+    }
+
+    private void LoadFailedFiles(long jobId)
+    {
+        IReadOnlyList<FailedFile> files =
+            [.. _journal!.FailedEntriesOf(jobId, MaxFailedFiles).Select(e => new FailedFile(e.SrcPath, e.Error ?? "Unknown error"))];
+        foreach (var handler in FailedFilesLoaded?.GetInvocationList() ?? [])
+        {
+            try { ((Action<long, IReadOnlyList<FailedFile>>)handler)(jobId, files); }
+            catch (Exception ex) { Trace.TraceError($"A failed-files subscriber failed: {ex}"); }
+        }
+    }
+
+    private const int MaxFailedFiles = 500;
 
     private void SchedulePassSafely()
     {
@@ -359,7 +413,10 @@ public sealed class JobRunner : IJobQueue
         worker.Stop.Dispose();
 
         var journal = _journal!;
-        if (journal.GetJob(jobId).State is JobState.Running or JobState.Verifying)
+        var state = journal.GetJob(jobId).State;
+        // Cancelled while it was running: its counts are final only now that the worker has stopped.
+        if (state == JobState.Cancelled) Finish(jobId, JobState.Cancelled);
+        else if (state is JobState.Running or JobState.Verifying)
         {
             if (pauseReason is not null)
             {
@@ -370,7 +427,8 @@ public sealed class JobRunner : IJobQueue
             {
                 // Files whose verification failed are Pending again: the job re-queues for a retry pass.
                 bool finished = journal.EntriesOf(jobId).All(e => e.State is EntryState.Done or EntryState.Failed);
-                journal.SetJobState(jobId, finished ? JobState.Done : JobState.Queued);
+                if (finished) Finish(jobId, JobState.Done);
+                else journal.SetJobState(jobId, JobState.Queued);
             }
         }
         Publish(SnapshotOf(jobId));
@@ -394,7 +452,9 @@ public sealed class JobRunner : IJobQueue
     {
         var journal = _journal!;
         if (!from.Contains(journal.GetJob(jobId).State)) return;
-        journal.SetJobState(jobId, to);
+        // A job cancelled while its worker is still stopping is finished again, with its final counts, when the worker exits.
+        if (to == JobState.Cancelled) Finish(jobId, to);
+        else journal.SetJobState(jobId, to);
         if (to == JobState.Queued) _jobErrors.Remove(jobId);
         _waiting.Remove(jobId);
         if (_workers.TryGetValue(jobId, out var worker))
@@ -438,11 +498,14 @@ public sealed class JobRunner : IJobQueue
         }
     }
 
-    private JobSnapshot SnapshotOf(long jobId)
+    private JobSnapshot SnapshotOf(long jobId) => SnapshotOf(_journal!.GetJob(jobId));
+
+    private JobSnapshot SnapshotOf(JobRow job)
     {
-        var journal = _journal!;
-        var job = journal.GetJob(jobId);
-        var c = JobCounters.From(journal.EntriesOf(jobId));
+        long jobId = job.Id;
+        if (job.Summary is { } summary && job.State is JobState.Done or JobState.Cancelled)
+            return Snapshots.FromSummary(job, summary);
+        var c = JobCounters.From(_journal!.EntriesOf(jobId));
         return Snapshots.Create(job, job.State, c, c.FinishedBytes, c.TotalBytes, null, 0,
             _jobErrors.TryGetValue(jobId, out var e) ? e : c.LastError, _waiting.GetValueOrDefault(jobId));
     }

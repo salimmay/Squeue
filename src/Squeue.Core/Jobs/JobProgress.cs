@@ -25,6 +25,8 @@ internal sealed class JobCounters
         return c;
     }
 
+    public JobSummary ToSummary() => new(Total, DoneCount, FailedCount, TotalBytes, LastError);
+
     public void Done(long bytes)
     {
         DoneCount++;
@@ -45,7 +47,19 @@ internal static class Snapshots
         string? currentFile, double speed, string? lastError, string? waitingFor) =>
         new(job.Id, job.Name ?? "Copy", job.Source ?? "", job.DestRoot ?? "", state,
             c.Total, c.DoneCount, c.FailedCount, totalBytes, doneBytes, currentFile, speed, lastError,
-            DateTime.FromFileTimeUtc(job.CreatedAt), waitingFor);
+            DateTime.FromFileTimeUtc(job.CreatedAt), waitingFor, FinishedAt(job, state), Checked(job));
+
+    /// A finished job, from the summary stored when it finished: its entries are not read.
+    /// A done job's bar is full; a cancelled one's is empty (the summary doesn't keep how far it got).
+    public static JobSnapshot FromSummary(JobRow job, JobSummary s) =>
+        new(job.Id, job.Name ?? "Copy", job.Source ?? "", job.DestRoot ?? "", job.State,
+            s.TotalFiles, s.DoneFiles, s.FailedFiles, s.TotalBytes, job.State == JobState.Done ? s.TotalBytes : 0,
+            null, 0, s.LastError, DateTime.FromFileTimeUtc(job.CreatedAt), null, FinishedAt(job, job.State), Checked(job));
+
+    private static bool Checked(JobRow job) => job.HashAlgorithm is not null;
+
+    private static DateTime? FinishedAt(JobRow job, JobState state) =>
+        state is JobState.Done or JobState.Cancelled && job.FinishedAt is { } at ? DateTime.FromFileTimeUtc(at) : null;
 }
 
 /// Recognising a drive problem (as opposed to a bad file) and saying it in plain words.

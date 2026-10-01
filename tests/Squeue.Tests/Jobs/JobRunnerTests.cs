@@ -335,7 +335,7 @@ public class JobRunnerTests
     }
 
     [Fact]
-    public void Startup_shows_unfinished_jobs_and_todays_finished_ones_only()
+    public void Startup_shows_unfinished_jobs_and_every_finished_one_still_in_history()
     {
         using var h = new RunnerHarness();
         long oldDone, todayDone, oldPaused;
@@ -362,7 +362,8 @@ public class JobRunnerTests
         h.Runner.Start();
         h.WaitFor(s => s.Id == oldPaused);
 
-        Assert.Equal(new[] { todayDone, oldPaused }, h.Events.Select(s => s.Id));
+        // A finished job is listed however old it is, until the history window removes it.
+        Assert.Equal(new[] { oldDone, todayDone, oldPaused }, h.Events.Select(s => s.Id));
     }
 
     [Fact]
