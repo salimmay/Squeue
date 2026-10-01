@@ -11,22 +11,43 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly IJobQueue _queue;
     private readonly IDriveSource _drives;
     private readonly Func<DateTime> _now;
+    private readonly Action<string>? _openFolder;
+    private readonly Dictionary<long, HistoryItemViewModel> _history = [];
+    private int _activeCount;
     private readonly Dictionary<long, JobCardViewModel> _cards = [];
     private readonly Dictionary<long, JobSnapshot> _latest = [];
     private readonly HashSet<long> _dismissed = []; // cards the user closed; later snapshots don't bring them back
 
     /// <param name="post">Runs an action on the UI thread; the queue raises events on its own thread.</param>
-    public MainViewModel(IJobQueue queue, IDriveSource drives, Action<Action> post, Func<DateTime>? now = null)
+    public MainViewModel(IJobQueue queue, IDriveSource drives, Action<Action> post, ISettingsStore settings,
+        Action<string>? openFolder = null, Func<DateTime>? now = null)
     {
         _queue = queue;
         _drives = drives;
+        _openFolder = openFolder;
         _now = now ?? (() => DateTime.Now);
+        Settings = new SettingsViewModel(settings);
+        Jobs.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IsEmpty));
         queue.JobChanged += snapshot => post(() => Apply(snapshot));
+        queue.FailedFilesLoaded += (id, files) => post(() =>
+        {
+            if (_history.TryGetValue(id, out var item)) item.SetFailedFiles(files);
+        });
         RefreshDrives();
         UpdateSummary();
     }
 
+    public SettingsViewModel Settings { get; }
     public ObservableCollection<JobCardViewModel> Jobs { get; } = [];
+    public ObservableCollection<HistoryItemViewModel> History { get; } = [];
+
+    /// Raised when the last active job ends.
+    public event Action? QueueFinished;
+
+    /// No cards and no pending plan: the queue shows its empty state.
+    public bool IsEmpty => Jobs.Count == 0 && PendingPlan is null;
+
+    [ObservableProperty] private string _historyHeader = "History";
     public ObservableCollection<DriveViewModel> Drives { get; } = [];
 
     [ObservableProperty] private string _subtitle = "";
@@ -34,6 +55,7 @@ public sealed partial class MainViewModel : ObservableObject
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasPlan))]
+    [NotifyPropertyChangedFor(nameof(IsEmpty))]
     private PlanViewModel? _pendingPlan;
 
     public bool HasPlan => PendingPlan is not null;
@@ -55,6 +77,7 @@ public sealed partial class MainViewModel : ObservableObject
         {
             Jobs.Remove(finished);
         }
+        UpdateHistory(snapshot);
         UpdateSummary();
         UpdateBusyDrives();
     }
@@ -65,7 +88,39 @@ public sealed partial class MainViewModel : ObservableObject
         if (_cards.Remove(card.Id)) Jobs.Remove(card);
     }
 
-    public void ProposePlan(JobPlan plan) => PendingPlan = new PlanViewModel(plan, StartPlan, _ => PendingPlan = null);
+    public void ProposePlan(JobPlan plan) => PendingPlan = new PlanViewModel(plan, StartPlan, _ => PendingPlan = null)
+    {
+        Verify = Settings.CheckAfterCopying,
+        Overwrite = Settings.ExistingFiles == ExistingFiles.Replace, // replacing forces Verify on
+    };
+
+    private void UpdateHistory(JobSnapshot snapshot)
+    {
+        if (snapshot.State is JobState.Done or JobState.Cancelled)
+        {
+            if (!_history.TryGetValue(snapshot.Id, out var item))
+            {
+                item = new HistoryItemViewModel(snapshot.Id, _queue, _openFolder, _now);
+                _history[snapshot.Id] = item;
+                item.Update(snapshot);
+                int index = 0;
+                while (index < History.Count && History[index].FinishedLocal >= item.FinishedLocal) index++;
+                History.Insert(index, item);
+            }
+            else
+            {
+                item.Update(snapshot);
+            }
+        }
+        else if (_history.Remove(snapshot.Id, out var gone))
+        {
+            History.Remove(gone);
+        }
+        int attention = History.Count(h => h.NeedsAttention);
+        HistoryHeader = attention == 0 ? "History"
+            : attention == 1 ? "History · 1 needs attention"
+            : $"History · {attention} need attention";
+    }
 
     [RelayCommand]
     public void RefreshDrives()
@@ -86,9 +141,11 @@ public sealed partial class MainViewModel : ObservableObject
         var active = _latest.Values.Where(IsActive).ToList();
         long left = active.Sum(s => s.TotalBytes - s.DoneBytes);
         double speed = active.Where(s => s.State is JobState.Running or JobState.Verifying).Sum(s => s.BytesPerSecond);
+        if (_activeCount > 0 && active.Count == 0) QueueFinished?.Invoke();
+        _activeCount = active.Count;
         string eta = Format.TimeLeftFor(left, speed);
         Subtitle = active.Count == 0
-            ? "Nothing to copy. Drop files or folders here."
+            ? "Nothing is copying."
             : eta.Length > 0 ? $"{Format.Bytes(left)} left · {eta}" : $"{Format.Bytes(left)} left";
 
         int doneToday = _latest.Values.Count(s => s.State == JobState.Done && s.FailedFiles == 0 && s.CreatedAtUtc.ToLocalTime().Date == _now().Date);

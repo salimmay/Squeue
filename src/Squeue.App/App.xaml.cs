@@ -31,7 +31,9 @@ public partial class App : Application
             string journalPath = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Squeue", "state.db");
             _runner = new JobRunner(new WindowsFileSystem(), journalPath);
-            var viewModel = new MainViewModel(_runner, new SystemDrives(), action => Dispatcher.BeginInvoke(action));
+            var viewModel = new MainViewModel(_runner, new SystemDrives(), action => Dispatcher.BeginInvoke(action),
+                new JsonSettingsStore(Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Squeue", "settings.json")));
             var window = new MainWindow(viewModel);
             MainWindow = window;
             window.Show();

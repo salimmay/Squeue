@@ -9,7 +9,7 @@ public class ViewModelTests
     private static readonly DateTime Now = new(2026, 9, 30, 15, 0, 0, DateTimeKind.Local);
 
     private static MainViewModel NewMain(FakeJobQueue queue, params DriveInfoLite[] drives) =>
-        new(queue, new FakeDrives(drives), action => action(), () => Now);
+        new(queue, new FakeDrives(drives), action => action(), new MemorySettings(), now: () => Now);
 
     [Fact]
     public void A_running_job_shows_a_card_with_progress_speed_and_time_left()
@@ -49,7 +49,7 @@ public class ViewModelTests
 
         Assert.Empty(main.Jobs);
         Assert.Equal("1 done today", main.DoneToday);
-        Assert.Equal("Nothing to copy. Drop files or folders here.", main.Subtitle);
+        Assert.Equal("Nothing is copying.", main.Subtitle);
     }
 
     [Fact]
@@ -269,7 +269,7 @@ public class ViewModelTests
     {
         var queue = new FakeJobQueue();
         var posted = new List<Action>();
-        var main = new MainViewModel(queue, new FakeDrives(), posted.Add, () => Now);
+        var main = new MainViewModel(queue, new FakeDrives(), posted.Add, new MemorySettings(), now: () => Now);
 
         queue.Raise(FakeJobQueue.Snapshot());
         Assert.Empty(main.Jobs);
@@ -324,5 +324,60 @@ public class ViewModelTests
         queue.Raise(FakeJobQueue.Snapshot(state: JobState.Verifying));
 
         Assert.Equal(new[] { false, true }, main.Drives.Select(d => d.IsBusy));
+    }
+
+    [Fact]
+    public void The_plan_starts_from_the_settings()
+    {
+        var replace = new MemorySettings(new AppSettings { ExistingFiles = ExistingFiles.Replace, CheckAfterCopying = false });
+        var main = new MainViewModel(new FakeJobQueue(), new FakeDrives(), a => a(), replace, now: () => Now);
+        main.ProposePlan(new JobPlan("DCIM", @"E:\DCIM", @"F:\Backup", []));
+        Assert.True(main.PendingPlan!.Overwrite);
+        Assert.True(main.PendingPlan.Verify);
+
+        var skip = new MainViewModel(new FakeJobQueue(), new FakeDrives(), a => a(), new MemorySettings(new AppSettings { CheckAfterCopying = false }), now: () => Now);
+        skip.ProposePlan(new JobPlan("DCIM", @"E:\DCIM", @"F:\Backup", []));
+        Assert.False(skip.PendingPlan!.Overwrite);
+        Assert.False(skip.PendingPlan.Verify);
+    }
+
+    [Fact]
+    public void QueueFinished_fires_when_the_last_job_ends()
+    {
+        var queue = new FakeJobQueue();
+        var main = NewMain(queue);
+        int fired = 0;
+        main.QueueFinished += () => fired++;
+        queue.Raise(FakeJobQueue.Snapshot());
+        Assert.Equal(0, fired);
+        queue.Raise(FakeJobQueue.Snapshot(state: JobState.Done, done: 100 * 1048576));
+        Assert.Equal(1, fired);
+        queue.Raise(FakeJobQueue.Snapshot(state: JobState.Done, done: 100 * 1048576));
+        Assert.Equal(1, fired);
+    }
+
+    [Fact]
+    public void IsEmpty_reflects_cards_and_plans()
+    {
+        var queue = new FakeJobQueue();
+        var main = NewMain(queue);
+        Assert.True(main.IsEmpty);
+        queue.Raise(FakeJobQueue.Snapshot());
+        Assert.False(main.IsEmpty);
+        queue.Raise(FakeJobQueue.Snapshot(state: JobState.Done, done: 100 * 1048576));
+        Assert.True(main.IsEmpty);
+        main.ProposePlan(new JobPlan("DCIM", @"E:\DCIM", @"F:\Backup", []));
+        Assert.False(main.IsEmpty);
+    }
+
+    [Fact]
+    public void A_cancelled_card_shows_no_progress()
+    {
+        var queue = new FakeJobQueue();
+        var main = NewMain(queue);
+        queue.Raise(FakeJobQueue.Snapshot());
+        Assert.True(main.Jobs[0].ShowProgress);
+        queue.Raise(FakeJobQueue.Snapshot(state: JobState.Cancelled, done: 0));
+        Assert.False(main.Jobs[0].ShowProgress);
     }
 }

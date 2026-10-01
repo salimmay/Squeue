@@ -22,6 +22,8 @@ public sealed partial class JobCardViewModel(long id, IJobQueue queue, Action<Jo
     [ObservableProperty] private bool _canResume;
     [ObservableProperty] private bool _canCancel;
     [ObservableProperty] private bool _canDismiss;
+    /// A cancelled job's snapshot carries no progress, so its card shows no bar or percent.
+    [ObservableProperty] private bool _showProgress = true;
 
     /// Why the job is paused, or the last failure of a job that finished with failures.
     [ObservableProperty]
@@ -37,6 +39,7 @@ public sealed partial class JobCardViewModel(long id, IJobQueue queue, Action<Jo
         Fraction = s.Fraction;
         Percent = $"{(s.State == JobState.Done ? Math.Round(s.Fraction * 100) : Math.Floor(s.Fraction * 100)):0}%";
         State = s.State;
+        ShowProgress = s.State != JobState.Cancelled;
         IsRunning = s.State is JobState.Running or JobState.Verifying;
         CanPause = s.State is JobState.Running or JobState.Verifying or JobState.Queued;
         CanResume = s.State == JobState.Paused;

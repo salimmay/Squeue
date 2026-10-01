@@ -33,3 +33,10 @@ public sealed class FakeDrives(params DriveInfoLite[] drives) : IDriveSource
 {
     public IReadOnlyList<DriveInfoLite> ReadyDrives() => drives;
 }
+
+public sealed class MemorySettings(AppSettings? initial = null) : ISettingsStore
+{
+    public AppSettings Stored { get; private set; } = initial ?? new AppSettings();
+    public AppSettings Load() => Stored;
+    public void Save(AppSettings settings) => Stored = settings;
+}
