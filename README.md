@@ -10,6 +10,18 @@ Squeue is a copy manager for Windows. It copies files safely, checks them afterw
 
 This runs the tests and writes a single `Squeue.exe` to `dist\Squeue`. Use `./build.ps1 -SkipTests` to skip the tests.
 
+To also build the installer (needs [Inno Setup 6](https://jrsoftware.org/isinfo.php)):
+
+```powershell
+./build.ps1 -Installer
+```
+
+This writes `dist\SqueueSetup.exe`. It installs for the current user without an administrator prompt.
+
+## Website
+
+The landing page is in `site/`. The Pages workflow publishes it on every push to `main`. Its download button points at `SqueueSetup.exe` in the latest GitHub release.
+
 ## Run from source
 
 ```powershell

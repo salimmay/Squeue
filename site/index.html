@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Squeue: safe file copying for Windows</title>
+<meta name="description" content="Squeue is a free copy manager for Windows. It copies your files, checks every one, and picks up where it left off if a drive is unplugged.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" type="image/png" href="squeue-512.png">
+<style>
+  :root {
+    --bg: #fbfbfd;
+    --surface: #ffffff;
+    --text: #1d1d1f;
+    --muted: #6e6e73;
+    --line: rgba(0, 0, 0, .08);
+    --accent: #3f63f0;
+    --accent-hover: #3355e0;
+    --ok: #1f9d55;
+    --track: #e8e8ed;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 12px 40px rgba(0, 0, 0, .08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0b0d;
+      --surface: #17171a;
+      --text: #f5f5f7;
+      --muted: #a1a1a6;
+      --line: rgba(255, 255, 255, .1);
+      --accent: #5b7cff;
+      --accent-hover: #7390ff;
+      --ok: #4cc38a;
+      --track: #2a2a2e;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 12px 40px rgba(0, 0, 0, .5);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 17px/1.5 "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px; }
+
+  header { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; color: var(--text); }
+  .brand img { width: 28px; height: 28px; }
+  header nav a { color: var(--muted); font-size: 15px; }
+
+  .hero { text-align: center; padding: 56px 0 40px; }
+  .hero img.logo { width: 96px; height: 96px; }
+  h1 {
+    font-family: "Segoe UI Variable Display", "Segoe UI", -apple-system, system-ui, sans-serif;
+    font-size: clamp(34px, 6vw, 56px);
+    line-height: 1.07;
+    letter-spacing: -.022em;
+    font-weight: 600;
+    margin: 24px auto 14px;
+    max-width: 14em;
+    text-wrap: balance;
+  }
+  .lead { color: var(--muted); font-size: clamp(18px, 2.4vw, 21px); max-width: 34em; margin: 0 auto; text-wrap: pretty; }
+  .actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 30px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 13px 24px; border-radius: 999px;
+    font-weight: 600; font-size: 17px;
+    transition: background-color .15s ease, transform .15s ease;
+  }
+  .btn:hover { text-decoration: none; }
+  .btn:active { transform: scale(.97); }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.primary:hover { background: var(--accent-hover); }
+  .btn.secondary { color: var(--text); border: 1px solid var(--line); background: var(--surface); }
+  .btn svg { width: 18px; height: 18px; fill: currentColor; }
+  .fine { color: var(--muted); font-size: 14px; margin-top: 14px; }
+
+  /* Window mock */
+  .window {
+    max-width: 640px; margin: 44px auto 0; text-align: left;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 14px; box-shadow: var(--shadow); overflow: hidden;
+  }
+  .tabs { display: flex; gap: 22px; padding: 14px 20px 0; border-bottom: 1px solid var(--line); font-size: 14px; color: var(--muted); }
+  .tabs span { padding-bottom: 10px; }
+  .tabs .on { color: var(--text); font-weight: 600; border-bottom: 2px solid var(--accent); }
+  .jobs { padding: 16px; display: grid; gap: 12px; }
+  .job { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .job-top { display: flex; justify-content: space-between; gap: 12px; font-size: 15px; font-weight: 600; }
+  .job-top small { font-weight: 400; color: var(--muted); font-size: 13px; white-space: nowrap; }
+  .job p { margin: 2px 0 10px; color: var(--muted); font-size: 13px; }
+  .bar { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 62%; border-radius: 3px; background: var(--accent); }
+  .done { color: var(--ok); font-size: 13px; font-weight: 600; }
+
+  section { padding: 64px 0 0; }
+  h2 {
+    font-family: "Segoe UI Variable Display", "Segoe UI", -apple-system, system-ui, sans-serif;
+    font-size: clamp(26px, 4vw, 34px); letter-spacing: -.018em; font-weight: 600;
+    text-align: center; margin: 0 0 28px; text-wrap: balance;
+  }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 22px; }
+  .card h3 { margin: 0 0 6px; font-size: 18px; font-weight: 600; }
+  .card p { margin: 0; color: var(--muted); font-size: 15.5px; }
+  .step { color: var(--accent); font-weight: 600; font-size: 14px; margin-bottom: 8px; }
+
+  .install { max-width: 640px; margin: 0 auto; color: var(--muted); font-size: 15.5px; }
+  .install li { margin-bottom: 8px; }
+  .install strong { color: var(--text); font-weight: 600; }
+
+  footer { margin-top: 72px; border-top: 1px solid var(--line); padding: 24px 0 40px; color: var(--muted); font-size: 14px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .hero > * { animation: rise .6s cubic-bezier(.2, .8, .2, 1) both; }
+    .hero > :nth-child(2) { animation-delay: .05s; }
+    .hero > :nth-child(3) { animation-delay: .1s; }
+    .hero > :nth-child(4) { animation-delay: .15s; }
+    .hero > :nth-child(5) { animation-delay: .2s; }
+    .hero > :nth-child(6) { animation-delay: .28s; }
+    @keyframes rise { from { opacity: 0; transform: translateY(12px); } }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <a class="brand" href="#top"><img src="squeue-512.png" alt="">Squeue</a>
+    <nav><a href="https://github.com/salimmay/Squeue">GitHub</a></nav>
+  </header>
+
+  <main id="top">
+    <div class="hero">
+      <img class="logo" src="squeue-512.png" alt="Squeue logo" width="96" height="96">
+      <h1>Copy your files. Know they arrived.</h1>
+      <p class="lead">Squeue is a free copy manager for Windows. It copies your files, checks every one, and picks up where it left off if a drive is unplugged.</p>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/salimmay/Squeue/releases/latest/download/SqueueSetup.exe">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 3h2v10.2l3.3-3.3 1.4 1.4L12 17l-5.7-5.7 1.4-1.4 3.3 3.3V3zM5 19h14v2H5v-2z"/></svg>
+          Download for Windows
+        </a>
+        <a class="btn secondary" href="https://github.com/salimmay/Squeue">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.2 19.5c.5.1.7-.2.7-.5v-1.8c-2.8.6-3.4-1.2-3.4-1.2-.5-1.1-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.3 1.1 2.9.8.1-.6.3-1.1.6-1.3-2.2-.3-4.6-1.1-4.6-5a3.900 3.900 0 0 1 1-2.700c-.1-.300-.4-1.300.1-2.700 0 0 .8-.3 2.800 1a9.500 9.500 0 0 1 5 0c1.900-1.300 2.800-1 2.800-1 .5 1.400.2 2.400.1 2.700a3.900 3.900 0 0 1 1 2.700c0 3.900-2.400 4.700-4.600 5 .4.300.7.900.7 1.800V21c0 .3.2.6.7.5A10 10 0 0 0 12 2z"/></svg>
+          View on GitHub
+        </a>
+      </div>
+      <p class="fine">Free and open source. Windows 10 or 11, 64-bit. About 44 MB.</p>
+
+      <div class="window" role="img" aria-label="The Squeue window with two copy jobs in the queue">
+        <div class="tabs"><span class="on">Queue</span><span>History</span><span>Settings</span></div>
+        <div class="jobs">
+          <div class="job">
+            <div class="job-top"><span>DCIM to Backup (E:)</span><small>62%, 2 min left</small></div>
+            <p>1,240 files, 38.6 GB</p>
+            <div class="bar"><i></i></div>
+          </div>
+          <div class="job">
+            <div class="job-top"><span>Wedding shoot to Archive (F:)</span><span class="done">All checked</span></div>
+            <p>812 files, 24.1 GB</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <section>
+      <h2>How it works</h2>
+      <div class="grid">
+        <div class="card"><div class="step">Step 1</div><h3>Drop your files</h3><p>Drag a folder or files onto the window, or pick them with a button.</p></div>
+        <div class="card"><div class="step">Step 2</div><h3>Choose where they go</h3><p>Squeue checks there is enough free space before it starts.</p></div>
+        <div class="card"><div class="step">Step 3</div><h3>Every file is checked</h3><p>After copying, Squeue reads each file back and compares it with the original.</p></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Built for copies you can't afford to lose</h2>
+      <div class="grid">
+        <div class="card"><h3>Checked copies</h3><p>Each file gets a checksum on both sides, so a damaged copy is caught, not discovered months later.</p></div>
+        <div class="card"><h3>Survives interruptions</h3><p>If the PC crashes or a card is pulled out, Squeue continues from where it stopped. No half-written files are left behind.</p></div>
+        <div class="card"><h3>Several drives at once</h3><p>Jobs on different drives run side by side. Jobs on the same drive wait their turn, so nothing slows down.</p></div>
+        <div class="card"><h3>Pause, resume, cancel</h3><p>Stop a job whenever you need the drive for something else and carry on later.</p></div>
+        <div class="card"><h3>History you can act on</h3><p>See what was copied and when. If files failed, see which ones and why, and retry only those.</p></div>
+        <div class="card"><h3>Private and free</h3><p>No account, no ads and no internet connection. The source code is open on GitHub.</p></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Installing</h2>
+      <ol class="install">
+        <li>Download <strong>SqueueSetup.exe</strong> and open it. It installs for your user only, so it doesn't ask for an administrator password.</li>
+        <li>Windows may show <strong>"Windows protected your PC"</strong> because the installer isn't signed yet. Click <strong>More info</strong>, then <strong>Run anyway</strong>.</li>
+        <li>Open Squeue from the Start menu. To remove it, use <strong>Installed apps</strong> in Windows Settings.</li>
+      </ol>
+    </section>
+  </main>
+
+  <footer>
+    <span>Squeue, made by Salim May</span>
+    <span><a href="https://github.com/salimmay/Squeue">Source code</a> · <a href="https://github.com/salimmay/Squeue/issues">Report a problem</a></span>
+  </footer>
+</div>
+</body>
+</html>
