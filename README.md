@@ -28,6 +28,18 @@ The landing page is in `site/`. The Pages workflow publishes it on every push to
 dotnet run --project src/Squeue.App
 ```
 
+## Explorer and the command line
+
+The installer adds **Copy with Squeue...** (files, folders, drives) and **Paste with Squeue** (folders, drives, the empty space in a folder) to Explorer's right-click menu. On Windows 11 they are under **Show more options**.
+
+```powershell
+Squeue.exe G:\DCIM                       # copy, ask where to
+Squeue.exe --to E:\Backup G:\DCIM         # copy into E:\Backup
+Squeue.exe --paste E:\Backup              # copy the files on the clipboard (Ctrl+C in Explorer) into E:\Backup
+```
+
+If Squeue is already open, a new launch hands its command line to the open window. Items selected together in Explorer become one job.
+
 ## Where data lives
 
 Squeue keeps its queue, history and settings in `%LOCALAPPDATA%\Squeue`.

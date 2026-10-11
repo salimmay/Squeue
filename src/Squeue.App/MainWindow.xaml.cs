@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Data;
@@ -64,11 +65,58 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog(this) == true) ChooseDestinationAndPlan(dialog.FileNames);
     }
 
-    private async void ChooseDestinationAndPlan(IReadOnlyList<string> sources)
+    /// Acts on a command line from Explorer's right-click menu or another launch.
+    public void HandleLaunch(LaunchRequest request)
+    {
+        if (request.Paste) PasteInto(request.Destination!);
+        else if (request.Destination is { } destination) PlanInto(request.Sources, destination);
+        else ChooseDestinationAndPlan(request.Sources);
+    }
+
+    private const int DROPEFFECT_MOVE = 2;
+
+    /// "Paste with Squeue": copies the files that were copied (Ctrl+C) in Explorer into this folder.
+    private void PasteInto(string folder)
+    {
+        if (!Directory.Exists(folder))
+        {
+            MessageBox.Show(this, $"{folder} isn't available.", "Squeue", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        string[] sources;
+        bool cut;
+        try
+        {
+            sources = Clipboard.ContainsFileDropList() ? Clipboard.GetFileDropList().Cast<string>().ToArray() : [];
+            cut = Clipboard.GetData("Preferred DropEffect") is MemoryStream effect && effect.Length >= 4
+                && (new BinaryReader(effect).ReadInt32() & DROPEFFECT_MOVE) != 0;
+        }
+        catch (ExternalException)
+        {
+            MessageBox.Show(this, "Another program is using the clipboard. Try again.", "Squeue", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        if (sources.Length == 0)
+        {
+            MessageBox.Show(this, "There are no files on the clipboard. Copy files in Explorer first (Ctrl+C), then choose Paste with Squeue.",
+                "Squeue", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (cut && MessageBox.Show(this, "These files were cut. Squeue can't move files yet, so it will copy them and leave the originals where they are.",
+                "Squeue", MessageBoxButton.OKCancel, MessageBoxImage.Information) != MessageBoxResult.OK)
+            return;
+        PlanInto(sources, folder);
+    }
+
+    private void ChooseDestinationAndPlan(IReadOnlyList<string> sources)
     {
         var dialog = new OpenFolderDialog { Title = "Copy to" };
         if (dialog.ShowDialog(this) != true) return;
-        string destination = dialog.FolderName;
+        PlanInto(sources, dialog.FolderName);
+    }
+
+    private async void PlanInto(IReadOnlyList<string> sources, string destination)
+    {
         try
         {
             // Listing a big card can take a moment; keep the window responsive.

@@ -95,11 +95,22 @@ You'll also need, for some tests: a USB stick, and a second drive (another USB s
 | H5 | Change settings, close and reopen Squeue | The settings are kept | |
 | H6 | Turn on Windows dark mode (Settings → Personalisation → Colours) | Squeue follows it and stays readable | |
 
+## J. Explorer right-click menu
+
+| # | Do this | Expect | Result |
+|---|---|---|---|
+| J1 | In Explorer, select the three `1xxCANON` folders, right-click → Show more options → **Copy with Squeue...** | One Squeue window, one "Copy to" dialog. After choosing `Backup`, one plan with 3 items. | |
+| J2 | Right-click the SD card drive in This PC → Show more options → **Copy with Squeue...** | The plan copies the whole card into a folder named "Drive G" (your card's letter) | |
+| J3 | Select some photos, press Ctrl+C. Open `Backup`, right-click the empty space → Show more options → **Paste with Squeue** | A plan with those photos, going into `Backup` | |
+| J4 | Same as J3 but press Ctrl+X instead | Squeue says it will copy, not move, and leaves the originals | |
+| J5 | Right-click → Paste with Squeue with nothing copied | "There are no files on the clipboard…" | |
+| J6 | With Squeue minimised, use Copy with Squeue... | The open window comes to the front; there's no second window | |
+
 ## I. Uninstall
 
 | # | Do this | Expect | Result |
 |---|---|---|---|
-| I1 | Windows Settings → Apps → Installed apps → Squeue → Uninstall | Removed. No Start menu entry left. | |
+| I1 | Windows Settings → Apps → Installed apps → Squeue → Uninstall | Removed. No Start menu entry and no right-click entries left. | |
 | I2 | Check `%LOCALAPPDATA%\Squeue` | Still there (history and settings are kept for a reinstall). Delete it by hand to remove everything. | |
 
 ## Already checked by Claude (2026-10-04)
